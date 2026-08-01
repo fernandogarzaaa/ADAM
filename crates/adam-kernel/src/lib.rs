@@ -7,4 +7,4 @@
 
 pub mod genome;
 
-pub use genome::{Genome, GenomeDiff, GenomeHistory, GenomeVersion, VersionId};
+pub use genome::{Genome, GenomeDiff, GenomeError, GenomeHistory, GenomeVersion, VersionId};

@@ -59,6 +59,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "adam-organism"
+version = "0.1.0"
+dependencies = [
+ "adam-beliefs",
+ "adam-evolution",
+ "adam-kernel",
+ "adam-memory",
+ "adam-skills",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
 name = "adam-skills"
 version = "0.1.0"
 dependencies = [

@@ -7,6 +7,7 @@ members = [
     "crates/adam-beliefs",
     "crates/adam-evolution",
     "crates/adam-eve",
+    "crates/adam-organism",
 ]
 
 [workspace.package]

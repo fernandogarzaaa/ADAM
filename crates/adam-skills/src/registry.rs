@@ -59,4 +59,15 @@ impl SkillRegistry {
     pub fn is_empty(&self) -> bool {
         self.skills.is_empty()
     }
+
+    pub fn find_by_name(&self, name: &str) -> Option<&Skill> {
+        self.skills.values().find(|s| s.name == name)
+    }
+
+    /// Remove a skill by name (used when an accepted evolution proposal
+    /// retires a chronically failing skill). Returns the removed skill.
+    pub fn remove_by_name(&mut self, name: &str) -> Option<Skill> {
+        let id = self.find_by_name(name)?.id;
+        self.skills.remove(&id)
+    }
 }
