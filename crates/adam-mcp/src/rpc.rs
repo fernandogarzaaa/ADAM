@@ -141,7 +141,9 @@ mod tests {
             "params": { "name": "adam_reflect", "arguments": {} }
         });
         let reflect_response = handle_message(&mut organism, &reflect_request).unwrap();
-        let text = reflect_response["result"]["content"][0]["text"].as_str().unwrap();
+        let text = reflect_response["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap();
         assert!(text.contains("\"total_memories\":1"));
     }
 

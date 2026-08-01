@@ -83,7 +83,11 @@ mod tests {
         let err = limiter.check_and_record(now).unwrap_err();
         assert_eq!(
             err,
-            GovernanceError::LimitExceeded { accepted: 2, max: 2, window_secs: 3600 }
+            GovernanceError::LimitExceeded {
+                accepted: 2,
+                max: 2,
+                window_secs: 3600
+            }
         );
     }
 

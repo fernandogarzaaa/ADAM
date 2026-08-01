@@ -35,7 +35,9 @@ mod tests {
             )
             .unwrap();
 
-        let results = organism.memory_query("cargo build failure", None, 5).unwrap();
+        let results = organism
+            .memory_query("cargo build failure", None, 5)
+            .unwrap();
         assert!(results.iter().any(|(record, _)| record.id == id));
     }
 
@@ -166,7 +168,10 @@ mod tests {
         );
         let id = organism.propose_mutation(proposal);
         organism.accept_mutation(id).unwrap();
-        assert_eq!(organism.genome().preferences.get("tone"), Some(&"concise".to_string()));
+        assert_eq!(
+            organism.genome().preferences.get("tone"),
+            Some(&"concise".to_string())
+        );
 
         let rolled_back = organism.rollback(v1, "regression").unwrap();
         assert_eq!(organism.identity().id, rolled_back);
@@ -178,10 +183,23 @@ mod tests {
     fn reflect_summarizes_every_subsystem() {
         let mut organism = new_organism();
         organism
-            .memory_store(MemoryKind::SelfKnowledge, "I debug systematically", "seed", vec![], 1.0, 0.0)
+            .memory_store(
+                MemoryKind::SelfKnowledge,
+                "I debug systematically",
+                "seed",
+                vec![],
+                1.0,
+                0.0,
+            )
             .unwrap();
         organism.form_belief(
-            Belief::form("tests catch regressions", EvidenceOrigin::Reasoning, "seed", 0.7).unwrap(),
+            Belief::form(
+                "tests catch regressions",
+                EvidenceOrigin::Reasoning,
+                "seed",
+                0.7,
+            )
+            .unwrap(),
         );
 
         let summary = organism.reflect().unwrap();
@@ -266,6 +284,9 @@ mod tests {
         let err = organism.accept_mutation(sixth).unwrap_err();
         assert!(matches!(err, OrganismError::Governance(_)));
         // The proposal is untouched — still pending, not silently dropped.
-        assert_eq!(organism.proposals().get(sixth).unwrap().status, adam_evolution::ProposalStatus::Proposed);
+        assert_eq!(
+            organism.proposals().get(sixth).unwrap().status,
+            adam_evolution::ProposalStatus::Proposed
+        );
     }
 }

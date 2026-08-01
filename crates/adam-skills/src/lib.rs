@@ -33,9 +33,15 @@ mod tests {
             .unwrap();
         assert_eq!(skill.stage, SkillStage::Created);
 
-        skill.record_test(true, "resolved missing dependency case").unwrap();
-        skill.record_test(true, "resolved borrow checker case").unwrap();
-        skill.record_test(false, "missed a lifetime elision case").unwrap();
+        skill
+            .record_test(true, "resolved missing dependency case")
+            .unwrap();
+        skill
+            .record_test(true, "resolved borrow checker case")
+            .unwrap();
+        skill
+            .record_test(false, "missed a lifetime elision case")
+            .unwrap();
         assert_eq!(skill.stage, SkillStage::Tested);
         assert_eq!(skill.test_results.len(), 3);
 
@@ -95,7 +101,10 @@ mod tests {
         skill.promote().unwrap();
 
         skill
-            .evolve("v1 missed edge cases", "v2 procedure with edge case handling")
+            .evolve(
+                "v1 missed edge cases",
+                "v2 procedure with edge case handling",
+            )
             .unwrap();
 
         assert_eq!(skill.stage, SkillStage::Created);
@@ -137,7 +146,11 @@ mod tests {
         skill.promote().unwrap();
         let id = registry.upsert(skill);
 
-        let discovered_only = Skill::discover("go-debugging", "Not ready yet", vec!["go_build_failed".to_string()]);
+        let discovered_only = Skill::discover(
+            "go-debugging",
+            "Not ready yet",
+            vec!["go_build_failed".to_string()],
+        );
         registry.upsert(discovered_only);
 
         assert_eq!(registry.len(), 2);

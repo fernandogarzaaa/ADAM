@@ -33,7 +33,9 @@ pub enum OrganismError {
     ProposalNotFound(ProposalId),
     #[error("skill '{0}' not found")]
     SkillNotFound(String),
-    #[error("genome field '{0}' cannot be amended automatically (only preferences.* is supported)")]
+    #[error(
+        "genome field '{0}' cannot be amended automatically (only preferences.* is supported)"
+    )]
     UnsupportedGenomeField(String),
 }
 
@@ -41,9 +43,16 @@ pub enum OrganismError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "effect")]
 pub enum AppliedEffect {
-    SkillRetired { skill_name: String },
-    GenomeAmended { new_version: VersionId, label: String },
-    AdvisoryOnly { note: String },
+    SkillRetired {
+        skill_name: String,
+    },
+    GenomeAmended {
+        new_version: VersionId,
+        label: String,
+    },
+    AdvisoryOnly {
+        note: String,
+    },
 }
 
 /// A point-in-time self-assessment across every subsystem.
@@ -291,8 +300,14 @@ impl Organism {
             genome_version_id: head.id,
             total_memories: self.memory.all()?.len(),
             active_beliefs: self.beliefs.all_active().len(),
-            promoted_skills: self.skills.by_stage(adam_skills::SkillStage::Promoted).len(),
-            rejected_skills: self.skills.by_stage(adam_skills::SkillStage::Rejected).len(),
+            promoted_skills: self
+                .skills
+                .by_stage(adam_skills::SkillStage::Promoted)
+                .len(),
+            rejected_skills: self
+                .skills
+                .by_stage(adam_skills::SkillStage::Rejected)
+                .len(),
             pending_proposals: self.proposals.pending().len(),
             accepted_proposals: self.proposals.accepted().len(),
         })

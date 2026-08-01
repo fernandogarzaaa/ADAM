@@ -77,7 +77,10 @@ mod tests {
         let engine = EvolutionEngine::new(EvolutionThresholds::default());
         let proposals = engine.analyze(&signals);
         assert_eq!(proposals.len(), 1);
-        assert!(matches!(proposals[0].kind, ProposalKind::ReconcileBelief { .. }));
+        assert!(matches!(
+            proposals[0].kind,
+            ProposalKind::ReconcileBelief { .. }
+        ));
     }
 
     #[test]

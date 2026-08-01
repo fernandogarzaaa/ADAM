@@ -73,8 +73,8 @@ impl MemoryStore {
         for row in rows {
             let (record_result, relation_kind) = row?;
             let record = record_result?;
-            let relation = RelationKind::parse(&relation_kind)
-                .expect("stored relation kind is always valid");
+            let relation =
+                RelationKind::parse(&relation_kind).expect("stored relation kind is always valid");
             out.push((record, relation));
         }
         Ok(out)

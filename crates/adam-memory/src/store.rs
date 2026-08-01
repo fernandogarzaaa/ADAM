@@ -223,7 +223,8 @@ pub(crate) fn row_to_record(row: &Row) -> rusqlite::Result<Result<MemoryRecord, 
             last_accessed_at: parse_rfc3339(&last_accessed_at),
             access_count,
             decay_rate,
-            superseded_by: superseded_by.map(|s| s.parse().expect("stored id is always a valid UUID")),
+            superseded_by: superseded_by
+                .map(|s| s.parse().expect("stored id is always a valid UUID")),
         })
     })())
 }

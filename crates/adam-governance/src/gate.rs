@@ -38,7 +38,8 @@ impl GovernanceGate {
     }
 
     pub fn log_rejection(&mut self, proposal_id: Uuid) {
-        self.audit.record(AuditAction::ProposalRejected { proposal_id });
+        self.audit
+            .record(AuditAction::ProposalRejected { proposal_id });
     }
 
     pub fn log_rollback(&mut self, target: Uuid, new_version: Uuid, reason: impl Into<String>) {

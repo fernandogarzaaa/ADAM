@@ -12,9 +12,18 @@ pub type AuditEntryId = Uuid;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "action")]
 pub enum AuditAction {
-    ProposalAccepted { proposal_id: Uuid, effect_summary: String },
-    ProposalRejected { proposal_id: Uuid },
-    RollbackPerformed { target: Uuid, new_version: Uuid, reason: String },
+    ProposalAccepted {
+        proposal_id: Uuid,
+        effect_summary: String,
+    },
+    ProposalRejected {
+        proposal_id: Uuid,
+    },
+    RollbackPerformed {
+        target: Uuid,
+        new_version: Uuid,
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

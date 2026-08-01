@@ -79,8 +79,7 @@ impl SimulationEvaluator {
     }
 
     pub fn evaluate(&self, proposal: &EvolutionProposal, trial_fn: &TrialFn) -> EvaluationResult {
-        let trials: Vec<TrialOutcome> =
-            (0..self.trial_count).map(|_| trial_fn(proposal)).collect();
+        let trials: Vec<TrialOutcome> = (0..self.trial_count).map(|_| trial_fn(proposal)).collect();
         let passed = trials.iter().filter(|t| t.succeeded).count() as f32;
         let fitness = passed / trials.len() as f32;
         let risk = risk_for(proposal);

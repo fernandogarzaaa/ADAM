@@ -324,8 +324,14 @@ impl GenomeDiff {
 fn diff_sets(from: &[String], to: &[String]) -> (Vec<String>, Vec<String>) {
     let from_set: HashSet<&String> = from.iter().collect();
     let to_set: HashSet<&String> = to.iter().collect();
-    let mut added: Vec<String> = to_set.difference(&from_set).map(|s| s.to_string()).collect();
-    let mut removed: Vec<String> = from_set.difference(&to_set).map(|s| s.to_string()).collect();
+    let mut added: Vec<String> = to_set
+        .difference(&from_set)
+        .map(|s| s.to_string())
+        .collect();
+    let mut removed: Vec<String> = from_set
+        .difference(&to_set)
+        .map(|s| s.to_string())
+        .collect();
     added.sort();
     removed.sort();
     (added, removed)
@@ -367,12 +373,16 @@ mod tests {
     #[test]
     fn content_hash_is_stable_and_order_independent() {
         let mut a = base_genome();
-        a.preferences.insert("tone".to_string(), "direct".to_string());
-        a.preferences.insert("verbosity".to_string(), "low".to_string());
+        a.preferences
+            .insert("tone".to_string(), "direct".to_string());
+        a.preferences
+            .insert("verbosity".to_string(), "low".to_string());
 
         let mut b = base_genome();
-        b.preferences.insert("verbosity".to_string(), "low".to_string());
-        b.preferences.insert("tone".to_string(), "direct".to_string());
+        b.preferences
+            .insert("verbosity".to_string(), "low".to_string());
+        b.preferences
+            .insert("tone".to_string(), "direct".to_string());
 
         assert_eq!(a.content_hash(), b.content_hash());
     }
@@ -398,12 +408,17 @@ mod tests {
         v3_genome.capabilities.push("go-debugging".to_string());
         let v3 = history.commit(v3_genome, "add go debugging");
 
-        let rolled_back = history.rollback(v1, "regression: go-debugging broke tests").unwrap();
+        let rolled_back = history
+            .rollback(v1, "regression: go-debugging broke tests")
+            .unwrap();
 
         // History must never shrink or mutate prior entries.
         assert_eq!(history.all().len(), 4);
         assert_eq!(history.get(v1).unwrap().genome, base_genome());
-        assert_eq!(history.get(v2).unwrap().genome.capabilities, vec!["rust-debugging".to_string()]);
+        assert_eq!(
+            history.get(v2).unwrap().genome.capabilities,
+            vec!["rust-debugging".to_string()]
+        );
         assert_eq!(
             history.get(v3).unwrap().genome.capabilities,
             vec!["rust-debugging".to_string(), "go-debugging".to_string()]
@@ -471,7 +486,8 @@ mod tests {
         let v1 = history.head_id();
 
         let mut next = base_genome();
-        next.preferences.insert("tone".to_string(), "direct".to_string());
+        next.preferences
+            .insert("tone".to_string(), "direct".to_string());
         let v2 = history.commit(next, "set tone preference");
 
         let diff = history.diff(v1, v2).unwrap();

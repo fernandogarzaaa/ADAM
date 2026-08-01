@@ -96,7 +96,11 @@ impl MemoryStore {
 
         let generalized = MemoryRecord::new(
             MemoryKind::Semantic,
-            format!("Generalized from {} experiences: {}", cluster.len(), contents.join("; ")),
+            format!(
+                "Generalized from {} experiences: {}",
+                cluster.len(),
+                contents.join("; ")
+            ),
             averaged_embedding,
             confidence_sum / n,
             Provenance {

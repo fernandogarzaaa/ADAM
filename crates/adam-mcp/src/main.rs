@@ -8,9 +8,14 @@ use adam_mcp::handle_message;
 use adam_organism::Organism;
 
 fn main() {
-    let memory_path = std::env::var("ADAM_MEMORY_PATH").unwrap_or_else(|_| "adam_memory.db".to_string());
-    let mut organism = Organism::new("ADAM", "An autonomous cognitive evolution layer", &memory_path)
-        .expect("failed to initialize ADAM organism");
+    let memory_path =
+        std::env::var("ADAM_MEMORY_PATH").unwrap_or_else(|_| "adam_memory.db".to_string());
+    let mut organism = Organism::new(
+        "ADAM",
+        "An autonomous cognitive evolution layer",
+        &memory_path,
+    )
+    .expect("failed to initialize ADAM organism");
 
     let stdin = io::stdin();
     let stdout = io::stdout();

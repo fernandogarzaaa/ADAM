@@ -23,7 +23,10 @@ pub fn call_tool(organism: &mut Organism, name: &str, args: &Value) -> Result<Va
         "adam_reject_mutation" => reject_mutation(organism, args),
         "adam_genome" => Ok(json!(organism.genome())),
         "adam_history" => history(organism, args),
-        "adam_reflect" => organism.reflect().map(|r| json!(r)).map_err(|e| e.to_string()),
+        "adam_reflect" => organism
+            .reflect()
+            .map(|r| json!(r))
+            .map_err(|e| e.to_string()),
         other => Err(format!("unknown tool '{other}'")),
     }
 }
@@ -40,7 +43,10 @@ fn opt_str(args: &Value, key: &str) -> Option<String> {
 }
 
 fn opt_f32(args: &Value, key: &str, default: f32) -> f32 {
-    args.get(key).and_then(Value::as_f64).map(|v| v as f32).unwrap_or(default)
+    args.get(key)
+        .and_then(Value::as_f64)
+        .map(|v| v as f32)
+        .unwrap_or(default)
 }
 
 fn opt_u64(args: &Value, key: &str, default: u64) -> u64 {
@@ -50,7 +56,11 @@ fn opt_u64(args: &Value, key: &str, default: u64) -> u64 {
 fn opt_strings(args: &Value, key: &str) -> Vec<String> {
     args.get(key)
         .and_then(Value::as_array)
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -60,8 +70,8 @@ fn parse_uuid(args: &Value, key: &str) -> Result<Uuid, String> {
 }
 
 fn memory_store(organism: &mut Organism, args: &Value) -> Result<Value, String> {
-    let kind = MemoryKind::parse(&str_field(args, "kind")?)
-        .ok_or_else(|| "invalid 'kind'".to_string())?;
+    let kind =
+        MemoryKind::parse(&str_field(args, "kind")?).ok_or_else(|| "invalid 'kind'".to_string())?;
     let content = str_field(args, "content")?;
     let origin = str_field(args, "origin")?;
     let evidence = opt_strings(args, "evidence");
@@ -79,7 +89,9 @@ fn memory_query(organism: &mut Organism, args: &Value) -> Result<Value, String> 
     let kind = opt_str(args, "kind").and_then(|k| MemoryKind::parse(&k));
     let top_k = opt_u64(args, "top_k", 5) as usize;
 
-    let results = organism.memory_query(&query, kind, top_k).map_err(|e| e.to_string())?;
+    let results = organism
+        .memory_query(&query, kind, top_k)
+        .map_err(|e| e.to_string())?;
     Ok(json!(results
         .into_iter()
         .map(|(record, score)| json!({ "record": record, "score": score }))
@@ -97,7 +109,8 @@ fn beliefs(organism: &mut Organism, args: &Value) -> Result<Value, String> {
         };
         let description = opt_str(args, "description").unwrap_or_default();
         let weight = opt_f32(args, "weight", 0.5);
-        let belief = Belief::form(statement, origin, description, weight).map_err(|e| e.to_string())?;
+        let belief =
+            Belief::form(statement, origin, description, weight).map_err(|e| e.to_string())?;
         let id = organism.form_belief(belief);
         return Ok(json!({ "id": id }));
     }
@@ -113,9 +126,21 @@ fn skills(organism: &mut Organism, args: &Value) -> Result<Value, String> {
             .into_iter()
             .chain(organism.skills().by_stage(adam_skills::SkillStage::Created))
             .chain(organism.skills().by_stage(adam_skills::SkillStage::Tested))
-            .chain(organism.skills().by_stage(adam_skills::SkillStage::Evaluated))
-            .chain(organism.skills().by_stage(adam_skills::SkillStage::Promoted))
-            .chain(organism.skills().by_stage(adam_skills::SkillStage::Rejected))
+            .chain(
+                organism
+                    .skills()
+                    .by_stage(adam_skills::SkillStage::Evaluated)
+            )
+            .chain(
+                organism
+                    .skills()
+                    .by_stage(adam_skills::SkillStage::Promoted)
+            )
+            .chain(
+                organism
+                    .skills()
+                    .by_stage(adam_skills::SkillStage::Rejected)
+            )
             .collect::<Vec<_>>())),
         "discover" => {
             let name = str_field(args, "name")?;
@@ -132,11 +157,17 @@ fn skills(organism: &mut Organism, args: &Value) -> Result<Value, String> {
                 .find_by_name(&name)
                 .map(|s| s.id)
                 .ok_or_else(|| format!("skill '{name}' not found"))?;
-            let skill = organism.skills_mut().get_mut(id).expect("looked up by id above");
+            let skill = organism
+                .skills_mut()
+                .get_mut(id)
+                .expect("looked up by id above");
             match action.as_str() {
                 "define_procedure" => {
                     skill
-                        .define_procedure(str_field(args, "procedure")?, opt_strings(args, "dependencies"))
+                        .define_procedure(
+                            str_field(args, "procedure")?,
+                            opt_strings(args, "dependencies"),
+                        )
                         .map_err(|e| e.to_string())?;
                 }
                 "record_test" => {
@@ -146,14 +177,19 @@ fn skills(organism: &mut Organism, args: &Value) -> Result<Value, String> {
                         .map_err(|e| e.to_string())?;
                 }
                 "evaluate" => {
-                    skill.evaluate(opt_f32(args, "threshold", 0.5)).map_err(|e| e.to_string())?;
+                    skill
+                        .evaluate(opt_f32(args, "threshold", 0.5))
+                        .map_err(|e| e.to_string())?;
                 }
                 "promote" => {
                     skill.promote().map_err(|e| e.to_string())?;
                 }
                 "evolve" => {
                     skill
-                        .evolve(str_field(args, "reason")?, str_field(args, "new_procedure")?)
+                        .evolve(
+                            str_field(args, "reason")?,
+                            str_field(args, "new_procedure")?,
+                        )
                         .map_err(|e| e.to_string())?;
                 }
                 _ => unreachable!(),
@@ -172,7 +208,10 @@ fn evolve(organism: &mut Organism, args: &Value) -> Result<Value, String> {
     };
 
     let ids = organism.evolve(&signals);
-    let proposals: Vec<_> = ids.iter().filter_map(|id| organism.proposals().get(*id)).collect();
+    let proposals: Vec<_> = ids
+        .iter()
+        .filter_map(|id| organism.proposals().get(*id))
+        .collect();
     Ok(json!(proposals))
 }
 
@@ -183,9 +222,15 @@ fn propose_mutation(organism: &mut Organism, args: &Value) -> Result<Value, Stri
     let confidence = opt_f32(args, "confidence", 0.5);
 
     let kind = match kind_str.as_str() {
-        "retire_skill" => ProposalKind::RetireSkill { skill_name: str_field(args, "skill_name")? },
-        "reconcile_belief" => ProposalKind::ReconcileBelief { statement: str_field(args, "statement")? },
-        "investigate_conflict" => ProposalKind::InvestigateConflict { topic: str_field(args, "topic")? },
+        "retire_skill" => ProposalKind::RetireSkill {
+            skill_name: str_field(args, "skill_name")?,
+        },
+        "reconcile_belief" => ProposalKind::ReconcileBelief {
+            statement: str_field(args, "statement")?,
+        },
+        "investigate_conflict" => ProposalKind::InvestigateConflict {
+            topic: str_field(args, "topic")?,
+        },
         "amend_genome" => ProposalKind::AmendGenome {
             field: str_field(args, "field")?,
             current_value: str_field(args, "current_value")?,
@@ -225,7 +270,9 @@ fn history(organism: &mut Organism, args: &Value) -> Result<Value, String> {
         "rollback" => {
             let target = parse_uuid(args, "target")?;
             let reason = opt_str(args, "reason").unwrap_or_else(|| "rollback via MCP".to_string());
-            let new_version = organism.rollback(target, reason).map_err(|e| e.to_string())?;
+            let new_version = organism
+                .rollback(target, reason)
+                .map_err(|e| e.to_string())?;
             Ok(json!({ "new_version": new_version }))
         }
         other => Err(format!("unknown history action '{other}'")),

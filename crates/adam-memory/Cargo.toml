@@ -14,3 +14,10 @@ uuid.workspace = true
 chrono.workspace = true
 thiserror.workspace = true
 rusqlite.workspace = true
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "retrieval"
+harness = false

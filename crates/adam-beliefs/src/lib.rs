@@ -31,11 +31,20 @@ mod tests {
 
     #[test]
     fn supporting_evidence_increases_confidence_toward_one() {
-        let mut belief =
-            Belief::form("rust is memory safe", EvidenceOrigin::Reasoning, "type system", 0.5)
-                .unwrap();
+        let mut belief = Belief::form(
+            "rust is memory safe",
+            EvidenceOrigin::Reasoning,
+            "type system",
+            0.5,
+        )
+        .unwrap();
         belief
-            .add_evidence(EvidenceOrigin::Observation, "no segfaults in 1000 runs", true, 0.5)
+            .add_evidence(
+                EvidenceOrigin::Observation,
+                "no segfaults in 1000 runs",
+                true,
+                0.5,
+            )
             .unwrap();
         assert!(belief.confidence > 0.5);
         assert_eq!(belief.evidence.len(), 2);
@@ -43,11 +52,20 @@ mod tests {
 
     #[test]
     fn contradicting_evidence_decreases_confidence_and_can_retract() {
-        let mut belief =
-            Belief::form("the api is stable", EvidenceOrigin::Observation, "no errors seen", 0.6)
-                .unwrap();
+        let mut belief = Belief::form(
+            "the api is stable",
+            EvidenceOrigin::Observation,
+            "no errors seen",
+            0.6,
+        )
+        .unwrap();
         belief
-            .add_evidence(EvidenceOrigin::Observation, "endpoint changed shape", false, 1.0)
+            .add_evidence(
+                EvidenceOrigin::Observation,
+                "endpoint changed shape",
+                false,
+                1.0,
+            )
             .unwrap();
         assert_eq!(belief.confidence, 0.0);
         assert_eq!(belief.status, BeliefStatus::Retracted);
@@ -55,8 +73,7 @@ mod tests {
 
     #[test]
     fn adding_evidence_to_inactive_belief_errors() {
-        let mut belief =
-            Belief::form("x", EvidenceOrigin::Reasoning, "seed", 1.0).unwrap();
+        let mut belief = Belief::form("x", EvidenceOrigin::Reasoning, "seed", 1.0).unwrap();
         belief
             .add_evidence(EvidenceOrigin::Observation, "kill it", false, 1.0)
             .unwrap();
@@ -126,12 +143,22 @@ mod tests {
     fn find_about_matches_active_beliefs_by_statement_substring() {
         let mut registry = BeliefRegistry::new();
         registry.upsert(
-            Belief::form("Rust prevents data races", EvidenceOrigin::Reasoning, "seed", 0.8)
-                .unwrap(),
+            Belief::form(
+                "Rust prevents data races",
+                EvidenceOrigin::Reasoning,
+                "seed",
+                0.8,
+            )
+            .unwrap(),
         );
         registry.upsert(
-            Belief::form("Python is dynamically typed", EvidenceOrigin::Reasoning, "seed", 0.8)
-                .unwrap(),
+            Belief::form(
+                "Python is dynamically typed",
+                EvidenceOrigin::Reasoning,
+                "seed",
+                0.8,
+            )
+            .unwrap(),
         );
 
         let matches = registry.find_about("rust");
