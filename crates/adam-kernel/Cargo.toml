@@ -1,0 +1,16 @@
+[package]
+name = "adam-kernel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "ADAM Kernel: versioned genome system with immutable history, rollback, and diffing"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+sha2.workspace = true
