@@ -10,10 +10,13 @@ use adam_organism::Organism;
 fn main() {
     let memory_path =
         std::env::var("ADAM_MEMORY_PATH").unwrap_or_else(|_| "adam_memory.db".to_string());
-    let mut organism = Organism::new(
+    let genome_path =
+        std::env::var("ADAM_GENOME_PATH").unwrap_or_else(|_| "adam_genome.json".to_string());
+    let mut organism = Organism::open(
         "ADAM",
         "An autonomous cognitive evolution layer",
         &memory_path,
+        &genome_path,
     )
     .expect("failed to initialize ADAM organism");
 

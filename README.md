@@ -60,7 +60,9 @@ The server speaks newline-delimited JSON-RPC 2.0 over stdio (the standard
 MCP stdio transport): `initialize` → `notifications/initialized` →
 `tools/list` → `tools/call`. Point `ADAM_MEMORY_PATH` at a file path to
 persist memory across restarts (defaults to `adam_memory.db` in the working
-directory; use `:memory:` for an ephemeral instance).
+directory; use `:memory:` for an ephemeral instance), and `ADAM_GENOME_PATH`
+at a file path to persist genome identity/history across restarts (defaults
+to `adam_genome.json`).
 
 ### Claude Desktop configuration
 

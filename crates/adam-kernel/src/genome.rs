@@ -119,7 +119,7 @@ pub enum GenomeError {
 /// except the root) rather than a branching DAG, which matches ADAM's
 /// single-organism evolution model: one lineage per organism instance,
 /// extended by `commit` and folded back on by `rollback`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenomeHistory {
     versions: Vec<GenomeVersion>,
     index: HashMap<VersionId, usize>,

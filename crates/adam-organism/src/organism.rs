@@ -37,6 +37,14 @@ pub enum OrganismError {
         "genome field '{0}' cannot be amended automatically (only preferences.* is supported)"
     )]
     UnsupportedGenomeField(String),
+    #[error("failed to persist genome to '{path}': {source}")]
+    GenomePersistence {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to (de)serialize genome history: {0}")]
+    GenomeSerialization(#[from] serde_json::Error),
 }
 
 /// The concrete, auditable outcome of applying an accepted proposal.
@@ -76,6 +84,7 @@ pub struct Organism {
     proposals: ProposalStore,
     engine: EvolutionEngine,
     governance: GovernanceGate,
+    genome_path: Option<String>,
 }
 
 impl Organism {
@@ -95,6 +104,57 @@ impl Organism {
             proposals: ProposalStore::new(),
             engine: EvolutionEngine::new(EvolutionThresholds::default()),
             governance: GovernanceGate::new(EvolutionLimits::default()),
+            genome_path: None,
+        })
+    }
+
+    /// Like [`Organism::new`], but persists genome history to `genome_path`
+    /// as JSON: if the file already exists, its history is loaded instead
+    /// of starting a fresh genesis, and every subsequent commit/rollback
+    /// is written back — giving identity continuity across process
+    /// restarts (and, since the file format is plain JSON, across LLM
+    /// provider backends running the same MCP server).
+    pub fn open(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        memory_path: &str,
+        genome_path: &str,
+    ) -> Result<Self, OrganismError> {
+        let memory = MemoryStore::open(memory_path)?;
+        let history = match std::fs::read_to_string(genome_path) {
+            Ok(json) => serde_json::from_str(&json)?,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                GenomeHistory::init(Genome::new(name, description), "genesis")
+            }
+            Err(source) => {
+                return Err(OrganismError::GenomePersistence {
+                    path: genome_path.to_string(),
+                    source,
+                })
+            }
+        };
+        let organism = Self {
+            history,
+            memory,
+            skills: SkillRegistry::new(),
+            beliefs: BeliefRegistry::new(),
+            proposals: ProposalStore::new(),
+            engine: EvolutionEngine::new(EvolutionThresholds::default()),
+            governance: GovernanceGate::new(EvolutionLimits::default()),
+            genome_path: Some(genome_path.to_string()),
+        };
+        organism.persist_genome()?;
+        Ok(organism)
+    }
+
+    fn persist_genome(&self) -> Result<(), OrganismError> {
+        let Some(path) = &self.genome_path else {
+            return Ok(());
+        };
+        let json = serde_json::to_string_pretty(&self.history)?;
+        std::fs::write(path, json).map_err(|source| OrganismError::GenomePersistence {
+            path: path.clone(),
+            source,
         })
     }
 
@@ -119,6 +179,7 @@ impl Organism {
     ) -> Result<VersionId, OrganismError> {
         let reason = reason.into();
         let new_version = self.history.rollback(target, reason.clone())?;
+        self.persist_genome()?;
         self.governance.log_rollback(target, new_version, reason);
         Ok(new_version)
     }
@@ -275,6 +336,7 @@ impl Organism {
                 let new_version = self
                     .history
                     .commit(genome, format!("accepted mutation: amend {field}"));
+                self.persist_genome()?;
                 let label = self.history.get(new_version)?.label.clone();
                 Ok(AppliedEffect::GenomeAmended { new_version, label })
             }

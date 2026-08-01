@@ -289,4 +289,42 @@ mod tests {
             adam_evolution::ProposalStatus::Proposed
         );
     }
+
+    #[test]
+    fn genome_identity_survives_a_process_restart_via_open() {
+        let genome_path =
+            std::env::temp_dir().join(format!("adam_test_genome_{}.json", uuid::Uuid::new_v4()));
+        let genome_path_str = genome_path.to_str().unwrap();
+
+        let v1 = {
+            let mut organism =
+                Organism::open("ADAM", "restart test", ":memory:", genome_path_str).unwrap();
+            let v1 = organism.identity().id;
+
+            let proposal = adam_evolution::EvolutionProposal::new(
+                adam_evolution::ProposalKind::AmendGenome {
+                    field: "preferences.tone".to_string(),
+                    current_value: "verbose".to_string(),
+                    suggested_value: "concise".to_string(),
+                },
+                "test",
+                vec![],
+                0.9,
+            );
+            let id = organism.propose_mutation(proposal);
+            organism.accept_mutation(id).unwrap();
+            v1
+        };
+        // Organism dropped here — simulates a process restart.
+
+        let reopened = Organism::open("ADAM", "restart test", ":memory:", genome_path_str).unwrap();
+        assert_ne!(reopened.identity().id, v1);
+        assert_eq!(
+            reopened.genome().preferences.get("tone"),
+            Some(&"concise".to_string())
+        );
+        assert_eq!(reopened.history().len(), 2);
+
+        std::fs::remove_file(genome_path).ok();
+    }
 }
