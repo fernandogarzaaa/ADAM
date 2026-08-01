@@ -47,6 +47,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "adam-mcp"
+version = "0.1.0"
+dependencies = [
+ "adam-beliefs",
+ "adam-evolution",
+ "adam-kernel",
+ "adam-memory",
+ "adam-organism",
+ "adam-skills",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "adam-memory"
 version = "0.1.0"
 dependencies = [

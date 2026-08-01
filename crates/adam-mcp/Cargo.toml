@@ -1,0 +1,22 @@
+[package]
+name = "adam-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "adam-mcp"
+path = "src/main.rs"
+
+[dependencies]
+adam-organism = { path = "../adam-organism" }
+adam-kernel = { path = "../adam-kernel" }
+adam-memory = { path = "../adam-memory" }
+adam-skills = { path = "../adam-skills" }
+adam-beliefs = { path = "../adam-beliefs" }
+adam-evolution = { path = "../adam-evolution" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }

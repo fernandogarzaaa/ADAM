@@ -8,7 +8,7 @@ use adam_evolution::{
     EvolutionEngine, EvolutionProposal, EvolutionSignals, EvolutionThresholds, ProposalError,
     ProposalId, ProposalKind, ProposalStore,
 };
-use adam_kernel::{Genome, GenomeError, GenomeHistory, GenomeVersion, VersionId};
+use adam_kernel::{Genome, GenomeDiff, GenomeError, GenomeHistory, GenomeVersion, VersionId};
 use adam_memory::{MemoryError, MemoryId, MemoryKind, MemoryRecord, MemoryStore, Provenance};
 use adam_skills::{Skill, SkillRegistry};
 use serde::{Deserialize, Serialize};
@@ -104,6 +104,10 @@ impl Organism {
         reason: impl Into<String>,
     ) -> Result<VersionId, OrganismError> {
         Ok(self.history.rollback(target, reason)?)
+    }
+
+    pub fn diff(&self, from: VersionId, to: VersionId) -> Result<GenomeDiff, OrganismError> {
+        Ok(self.history.diff(from, to)?)
     }
 
     // -- memory ----------------------------------------------------------
