@@ -215,6 +215,7 @@ fn history(organism: &mut Organism, args: &Value) -> Result<Value, String> {
     let action = opt_str(args, "action").unwrap_or_else(|| "list".to_string());
     match action.as_str() {
         "list" => Ok(json!(organism.history())),
+        "audit" => Ok(json!(organism.audit_log())),
         "diff" => {
             let from = parse_uuid(args, "from")?;
             let to = parse_uuid(args, "to")?;

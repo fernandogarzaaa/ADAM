@@ -133,11 +133,11 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "adam_history",
-            "description": "Inspect or act on genome version history. 'action' selects: list (default), diff (needs from/to), rollback (needs target/reason).",
+            "description": "Inspect or act on genome version history. 'action' selects: list (default), audit (view the governance audit log), diff (needs from/to), rollback (needs target/reason).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "action": { "type": "string", "enum": ["list", "diff", "rollback"] },
+                    "action": { "type": "string", "enum": ["list", "audit", "diff", "rollback"] },
                     "from": { "type": "string" },
                     "to": { "type": "string" },
                     "target": { "type": "string" },

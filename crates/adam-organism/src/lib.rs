@@ -190,4 +190,82 @@ mod tests {
         assert_eq!(summary.active_beliefs, 1);
         assert_eq!(summary.pending_proposals, 0);
     }
+
+    #[test]
+    fn every_accept_reject_and_rollback_is_written_to_the_audit_log() {
+        let mut organism = new_organism();
+        let v1 = organism.identity().id;
+
+        let accept_proposal = adam_evolution::EvolutionProposal::new(
+            adam_evolution::ProposalKind::AmendGenome {
+                field: "preferences.tone".to_string(),
+                current_value: "verbose".to_string(),
+                suggested_value: "concise".to_string(),
+            },
+            "test",
+            vec![],
+            0.9,
+        );
+        let accept_id = organism.propose_mutation(accept_proposal);
+        organism.accept_mutation(accept_id).unwrap();
+
+        let reject_proposal = adam_evolution::EvolutionProposal::new(
+            adam_evolution::ProposalKind::InvestigateConflict {
+                topic: "x".to_string(),
+            },
+            "test",
+            vec![],
+            0.5,
+        );
+        let reject_id = organism.propose_mutation(reject_proposal);
+        organism.reject_mutation(reject_id).unwrap();
+
+        organism.rollback(v1, "regression").unwrap();
+
+        assert_eq!(organism.audit_log().len(), 3);
+    }
+
+    #[test]
+    fn evolution_rate_limit_blocks_excess_acceptances_without_dropping_the_proposal() {
+        let mut organism = Organism::new("ADAM", "test", ":memory:").unwrap();
+        // Exhaust the default limit (5 per 24h) with cheap retire-skill proposals.
+        let mut last_id = None;
+        for i in 0..5 {
+            let mut skill = Skill::discover(format!("skill-{i}"), "d", vec![]);
+            skill.define_procedure("p", vec![]).unwrap();
+            skill.record_test(false, "f").unwrap();
+            skill.evaluate(0.9).unwrap();
+            organism.register_skill(skill);
+
+            let proposal = adam_evolution::EvolutionProposal::new(
+                adam_evolution::ProposalKind::RetireSkill {
+                    skill_name: format!("skill-{i}"),
+                },
+                "test",
+                vec![],
+                0.9,
+            );
+            let id = organism.propose_mutation(proposal);
+            organism.accept_mutation(id).unwrap();
+            last_id = Some(id);
+        }
+        let _ = last_id;
+
+        let mut skill = Skill::discover("skill-5", "d", vec![]);
+        skill.define_procedure("p", vec![]).unwrap();
+        organism.register_skill(skill);
+        let sixth = organism.propose_mutation(adam_evolution::EvolutionProposal::new(
+            adam_evolution::ProposalKind::RetireSkill {
+                skill_name: "skill-5".to_string(),
+            },
+            "test",
+            vec![],
+            0.9,
+        ));
+
+        let err = organism.accept_mutation(sixth).unwrap_err();
+        assert!(matches!(err, OrganismError::Governance(_)));
+        // The proposal is untouched — still pending, not silently dropped.
+        assert_eq!(organism.proposals().get(sixth).unwrap().status, adam_evolution::ProposalStatus::Proposed);
+    }
 }

@@ -8,6 +8,7 @@ use adam_evolution::{
     EvolutionEngine, EvolutionProposal, EvolutionSignals, EvolutionThresholds, ProposalError,
     ProposalId, ProposalKind, ProposalStore,
 };
+use adam_governance::{AuditEntry, EvolutionLimits, GovernanceError, GovernanceGate};
 use adam_kernel::{Genome, GenomeDiff, GenomeError, GenomeHistory, GenomeVersion, VersionId};
 use adam_memory::{MemoryError, MemoryId, MemoryKind, MemoryRecord, MemoryStore, Provenance};
 use adam_skills::{Skill, SkillRegistry};
@@ -26,6 +27,8 @@ pub enum OrganismError {
     Belief(#[from] BeliefError),
     #[error(transparent)]
     Proposal(#[from] ProposalError),
+    #[error(transparent)]
+    Governance(#[from] GovernanceError),
     #[error("proposal {0} not found")]
     ProposalNotFound(ProposalId),
     #[error("skill '{0}' not found")]
@@ -63,6 +66,7 @@ pub struct Organism {
     beliefs: BeliefRegistry,
     proposals: ProposalStore,
     engine: EvolutionEngine,
+    governance: GovernanceGate,
 }
 
 impl Organism {
@@ -81,6 +85,7 @@ impl Organism {
             beliefs: BeliefRegistry::new(),
             proposals: ProposalStore::new(),
             engine: EvolutionEngine::new(EvolutionThresholds::default()),
+            governance: GovernanceGate::new(EvolutionLimits::default()),
         })
     }
 
@@ -103,7 +108,14 @@ impl Organism {
         target: VersionId,
         reason: impl Into<String>,
     ) -> Result<VersionId, OrganismError> {
-        Ok(self.history.rollback(target, reason)?)
+        let reason = reason.into();
+        let new_version = self.history.rollback(target, reason.clone())?;
+        self.governance.log_rollback(target, new_version, reason);
+        Ok(new_version)
+    }
+
+    pub fn audit_log(&self) -> &[AuditEntry] {
+        self.governance.audit_log()
     }
 
     pub fn diff(&self, from: VersionId, to: VersionId) -> Result<GenomeDiff, OrganismError> {
@@ -198,8 +210,13 @@ impl Organism {
 
     /// Accept a pending proposal and apply its concrete effect. This is
     /// the one place mutation actually happens — everywhere else, changes
-    /// require this explicit, auditable step.
+    /// require this explicit, auditable step. Gated by the evolution rate
+    /// limit: if the organism has already accepted too many mutations in
+    /// the current window, this fails and the proposal remains `Proposed`
+    /// (untouched) for later retry rather than being silently dropped.
     pub fn accept_mutation(&mut self, id: ProposalId) -> Result<AppliedEffect, OrganismError> {
+        self.governance.authorize_acceptance()?;
+
         let kind = {
             let proposal = self
                 .proposals
@@ -208,7 +225,9 @@ impl Organism {
             proposal.accept()?;
             proposal.kind.clone()
         };
-        self.apply(&kind)
+        let effect = self.apply(&kind)?;
+        self.governance.log_acceptance(id, format!("{effect:?}"));
+        Ok(effect)
     }
 
     pub fn reject_mutation(&mut self, id: ProposalId) -> Result<(), OrganismError> {
@@ -217,6 +236,7 @@ impl Organism {
             .get_mut(id)
             .ok_or(OrganismError::ProposalNotFound(id))?;
         proposal.reject()?;
+        self.governance.log_rejection(id);
         Ok(())
     }
 
