@@ -4,6 +4,7 @@ members = [
     "crates/adam-kernel",
     "crates/adam-memory",
     "crates/adam-skills",
+    "crates/adam-beliefs",
 ]
 
 [workspace.package]
