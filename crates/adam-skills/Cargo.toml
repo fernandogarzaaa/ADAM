@@ -1,0 +1,15 @@
+[package]
+name = "adam-skills"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "ADAM Skill Evolution Engine: discover -> create -> test -> evaluate -> promote -> evolve"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
