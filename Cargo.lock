@@ -14,6 +14,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "adam-eve"
+version = "0.1.0"
+dependencies = [
+ "adam-evolution",
+ "chrono",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "adam-evolution"
 version = "0.1.0"
 dependencies = [
