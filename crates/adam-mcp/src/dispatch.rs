@@ -201,13 +201,17 @@ fn skills(organism: &mut Organism, args: &Value) -> Result<Value, String> {
 }
 
 fn evolve(organism: &mut Organism, args: &Value) -> Result<Value, String> {
-    let signals: EvolutionSignals = if args.is_null() || args == &json!({}) {
-        EvolutionSignals::default()
+    let auto_requested = args.is_null()
+        || args == &json!({})
+        || args.get("auto").and_then(Value::as_bool) == Some(true);
+
+    let ids = if auto_requested {
+        organism.evolve_auto().map_err(|e| e.to_string())?
     } else {
-        serde_json::from_value(args.clone()).unwrap_or_default()
+        let signals: EvolutionSignals = serde_json::from_value(args.clone()).unwrap_or_default();
+        organism.evolve(&signals)
     };
 
-    let ids = organism.evolve(&signals);
     let proposals: Vec<_> = ids
         .iter()
         .filter_map(|id| organism.proposals().get(*id))

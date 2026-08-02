@@ -60,6 +60,13 @@ impl SkillRegistry {
         self.skills.is_empty()
     }
 
+    /// Every known skill, regardless of stage — used by automatic signal
+    /// collection, which needs to see rejected/failing skills too, not
+    /// just those queryable by stage or trigger.
+    pub fn all(&self) -> Vec<&Skill> {
+        self.skills.values().collect()
+    }
+
     pub fn find_by_name(&self, name: &str) -> Option<&Skill> {
         self.skills.values().find(|s| s.name == name)
     }

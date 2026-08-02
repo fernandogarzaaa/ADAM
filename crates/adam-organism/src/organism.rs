@@ -5,8 +5,9 @@
 
 use adam_beliefs::{Belief, BeliefError, BeliefId, BeliefRegistry};
 use adam_evolution::{
-    EvolutionEngine, EvolutionProposal, EvolutionSignals, EvolutionThresholds, ProposalError,
-    ProposalId, ProposalKind, ProposalStore,
+    BeliefInstabilitySignal, EvolutionEngine, EvolutionProposal, EvolutionSignals,
+    EvolutionThresholds, ProposalError, ProposalId, ProposalKind, ProposalStore,
+    RecurringConflictSignal, SkillFailureSignal,
 };
 use adam_governance::{AuditEntry, EvolutionLimits, GovernanceError, GovernanceGate};
 use adam_kernel::{Genome, GenomeDiff, GenomeError, GenomeHistory, GenomeVersion, VersionId};
@@ -257,6 +258,75 @@ impl Organism {
 
     pub fn register_skill(&mut self, skill: Skill) -> adam_skills::SkillId {
         self.skills.upsert(skill)
+    }
+
+    /// Derive [`EvolutionSignals`] from the organism's own current state
+    /// instead of requiring a caller to assemble them: chronically failing
+    /// skills, beliefs that keep getting retracted or superseded on the
+    /// same statement, and memory topics that keep losing contradictions.
+    /// Genome drift signals still require external judgment (there is no
+    /// structural indicator for "this policy is stale") and are left
+    /// empty here; callers may still merge their own into the result.
+    pub fn collect_signals(&self) -> Result<EvolutionSignals, OrganismError> {
+        let skill_failures = self
+            .skills
+            .all()
+            .into_iter()
+            .filter(|s| !s.test_results.is_empty() && s.fitness_score < 1.0)
+            .map(|s| SkillFailureSignal {
+                skill_name: s.name.clone(),
+                fitness_score: s.fitness_score,
+                failure_count: s.test_results.iter().filter(|r| !r.passed).count() as u32,
+                failures: s.failures.clone(),
+            })
+            .collect();
+
+        let mut retractions: std::collections::HashMap<String, (f32, u32)> =
+            std::collections::HashMap::new();
+        for belief in self.beliefs.all() {
+            if !belief.is_active() {
+                retractions
+                    .entry(belief.statement.clone())
+                    .and_modify(|(confidence, count)| {
+                        *confidence = belief.confidence;
+                        *count += 1;
+                    })
+                    .or_insert((belief.confidence, 1));
+            }
+        }
+        let belief_instabilities = retractions
+            .into_iter()
+            .map(
+                |(statement, (confidence, retraction_count))| BeliefInstabilitySignal {
+                    statement,
+                    confidence,
+                    retraction_count,
+                },
+            )
+            .collect();
+
+        let recurring_conflicts = self
+            .memory
+            .conflict_topics()?
+            .into_iter()
+            .map(|(topic, occurrences)| RecurringConflictSignal { topic, occurrences })
+            .collect();
+
+        Ok(EvolutionSignals {
+            skill_failures,
+            belief_instabilities,
+            recurring_conflicts,
+            genome_drifts: Vec::new(),
+        })
+    }
+
+    /// Analyze automatically-collected signals (see [`Organism::collect_signals`])
+    /// and record every generated proposal, returning their ids. This is
+    /// the proactive counterpart to [`Organism::evolve`], which requires a
+    /// caller-supplied [`EvolutionSignals`].
+    pub fn evolve_auto(&mut self) -> Result<Vec<ProposalId>, OrganismError> {
+        let signals = self.collect_signals()?;
+        Ok(self.evolve(&signals))
     }
 
     // -- evolution -----------------------------------------------------

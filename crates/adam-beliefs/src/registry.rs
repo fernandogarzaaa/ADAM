@@ -33,6 +33,13 @@ impl BeliefRegistry {
         self.beliefs.values().filter(|b| b.is_active()).collect()
     }
 
+    /// Every known belief regardless of status — used by automatic signal
+    /// collection, which needs to see retracted/superseded beliefs to
+    /// detect instability, not just what is currently active.
+    pub fn all(&self) -> Vec<&Belief> {
+        self.beliefs.values().collect()
+    }
+
     pub fn len(&self) -> usize {
         self.beliefs.len()
     }

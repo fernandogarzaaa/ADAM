@@ -327,4 +327,75 @@ mod tests {
 
         std::fs::remove_file(genome_path).ok();
     }
+
+    #[test]
+    fn evolve_auto_derives_signals_from_current_organism_state_without_a_caller_supplying_them() {
+        let mut organism = new_organism();
+
+        // A chronically failing skill (3+ failures needed to cross the
+        // default RetireSkill threshold).
+        let mut skill = Skill::discover("flaky", "unreliable", vec![]);
+        skill.define_procedure("try thing", vec![]).unwrap();
+        skill.record_test(false, "boom").unwrap();
+        skill.record_test(false, "boom again").unwrap();
+        skill.record_test(false, "boom a third time").unwrap();
+        skill.evaluate(0.9).unwrap();
+        organism.register_skill(skill);
+
+        // Two separately-retracted beliefs sharing a statement (2+ needed
+        // to cross the default ReconcileBelief threshold).
+        for _ in 0..2 {
+            let mut belief = Belief::form(
+                "the api is stable",
+                EvidenceOrigin::Observation,
+                "seed",
+                0.3,
+            )
+            .unwrap();
+            belief
+                .add_evidence(EvidenceOrigin::Observation, "broke again", false, 1.0)
+                .unwrap();
+            organism.form_belief(belief);
+        }
+
+        // A recurring memory conflict on the same topic (3+ needed to
+        // cross the default InvestigateConflict threshold).
+        let winner_id = organism
+            .memory_store(
+                MemoryKind::Semantic,
+                "the service is reliable",
+                "seed",
+                vec![],
+                0.9,
+                0.0,
+            )
+            .unwrap();
+        for i in 0..3 {
+            let loser_id = organism
+                .memory_store(
+                    MemoryKind::Semantic,
+                    &format!("the service is unreliable {i}"),
+                    "seed",
+                    vec![],
+                    0.2,
+                    0.0,
+                )
+                .unwrap();
+            organism
+                .memory()
+                .resolve_conflict(winner_id, loser_id)
+                .unwrap();
+        }
+
+        let signals = organism.collect_signals().unwrap();
+        assert_eq!(signals.skill_failures.len(), 1);
+        assert_eq!(signals.skill_failures[0].skill_name, "flaky");
+        assert_eq!(signals.belief_instabilities.len(), 1);
+        assert_eq!(signals.belief_instabilities[0].retraction_count, 2);
+        assert_eq!(signals.recurring_conflicts.len(), 1);
+        assert_eq!(signals.recurring_conflicts[0].occurrences, 3);
+
+        let ids = organism.evolve_auto().unwrap();
+        assert!(!ids.is_empty());
+    }
 }

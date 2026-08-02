@@ -77,10 +77,11 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "adam_evolve",
-            "description": "Analyze signals (skill failures, belief instability, recurring conflicts, genome drift) and generate evolution proposals. Proposals never auto-apply.",
+            "description": "Analyze signals (skill failures, belief instability, recurring conflicts, genome drift) and generate evolution proposals. Proposals never auto-apply. Omit all fields (or pass {\"auto\": true}) to auto-collect signals from the organism's current skill/belief/memory state instead of supplying them manually.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
+                    "auto": { "type": "boolean", "description": "Derive signals from current organism state instead of the fields below." },
                     "skill_failures": { "type": "array" },
                     "belief_instabilities": { "type": "array" },
                     "recurring_conflicts": { "type": "array" },
