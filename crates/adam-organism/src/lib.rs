@@ -398,4 +398,112 @@ mod tests {
         let ids = organism.evolve_auto().unwrap();
         assert!(!ids.is_empty());
     }
+
+    #[test]
+    fn amending_values_beyond_preferences_requires_a_prior_eve_approval() {
+        let mut organism = new_organism();
+        let proposal = adam_evolution::EvolutionProposal::new(
+            adam_evolution::ProposalKind::AmendGenome {
+                field: "values.append".to_string(),
+                current_value: String::new(),
+                suggested_value: "curiosity".to_string(),
+            },
+            "observed a pattern favoring curiosity",
+            vec![],
+            0.9,
+        );
+        let id = organism.propose_mutation(proposal);
+
+        // No EVE evaluation recorded yet — accept must fail closed.
+        let err = organism.accept_mutation(id).unwrap_err();
+        assert!(matches!(err, OrganismError::EveApprovalRequired { .. }));
+        assert!(organism.genome().values.is_empty());
+    }
+
+    #[test]
+    fn eve_approval_unlocks_appending_to_a_genome_list_field() {
+        let mut organism = new_organism();
+        let proposal = adam_evolution::EvolutionProposal::new(
+            adam_evolution::ProposalKind::AmendGenome {
+                field: "values.append".to_string(),
+                current_value: String::new(),
+                suggested_value: "curiosity".to_string(),
+            },
+            "observed a pattern favoring curiosity",
+            vec![],
+            // Confidence 1.0 keeps AmendGenome's baseline risk (0.6) at
+            // exactly the default max_acceptable_risk threshold rather
+            // than over it, so a clean trial run can still reach Approve
+            // instead of being forced into NeedsReview by risk alone.
+            1.0,
+        );
+        let id = organism.propose_mutation(proposal);
+
+        let trials = vec![
+            adam_eve::TrialOutcome {
+                succeeded: true,
+                detail: "sandbox replay ok".to_string(),
+            };
+            5
+        ];
+        let evaluation = organism.evaluate_mutation_from_trials(id, trials).unwrap();
+        assert_eq!(evaluation.recommendation, adam_eve::Recommendation::Approve);
+
+        let effect = organism.accept_mutation(id).unwrap();
+        assert!(matches!(effect, AppliedEffect::GenomeAmended { .. }));
+        assert_eq!(organism.genome().values, vec!["curiosity".to_string()]);
+    }
+
+    #[test]
+    fn eve_needs_review_recommendation_still_blocks_acceptance() {
+        let mut organism = new_organism();
+        let proposal = adam_evolution::EvolutionProposal::new(
+            adam_evolution::ProposalKind::AmendGenome {
+                field: "goals.append".to_string(),
+                current_value: String::new(),
+                suggested_value: "ship faster".to_string(),
+            },
+            "mixed evidence",
+            vec![],
+            0.9,
+        );
+        let id = organism.propose_mutation(proposal);
+
+        // Half the trials fail -> fitness 0.5, in the NeedsReview band.
+        let trials = vec![
+            adam_eve::TrialOutcome {
+                succeeded: true,
+                detail: "ok".to_string(),
+            },
+            adam_eve::TrialOutcome {
+                succeeded: false,
+                detail: "regressed".to_string(),
+            },
+        ];
+        organism.evaluate_mutation_from_trials(id, trials).unwrap();
+
+        let err = organism.accept_mutation(id).unwrap_err();
+        assert!(matches!(err, OrganismError::EveApprovalRequired { .. }));
+        assert!(organism.genome().goals.is_empty());
+    }
+
+    #[test]
+    fn preferences_amendments_remain_ungated_by_eve() {
+        let mut organism = new_organism();
+        let proposal = adam_evolution::EvolutionProposal::new(
+            adam_evolution::ProposalKind::AmendGenome {
+                field: "preferences.tone".to_string(),
+                current_value: "verbose".to_string(),
+                suggested_value: "concise".to_string(),
+            },
+            "user prefers concise responses",
+            vec![],
+            0.9,
+        );
+        let id = organism.propose_mutation(proposal);
+
+        // No EVE evaluation recorded, yet preferences.* still succeeds.
+        let effect = organism.accept_mutation(id).unwrap();
+        assert!(matches!(effect, AppliedEffect::GenomeAmended { .. }));
+    }
 }

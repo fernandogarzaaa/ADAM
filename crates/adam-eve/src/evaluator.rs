@@ -78,29 +78,58 @@ impl SimulationEvaluator {
         }
     }
 
+    pub fn thresholds(&self) -> &EvaluationThresholds {
+        &self.thresholds
+    }
+
     pub fn evaluate(&self, proposal: &EvolutionProposal, trial_fn: &TrialFn) -> EvaluationResult {
         let trials: Vec<TrialOutcome> = (0..self.trial_count).map(|_| trial_fn(proposal)).collect();
-        let passed = trials.iter().filter(|t| t.succeeded).count() as f32;
-        let fitness = passed / trials.len() as f32;
-        let risk = risk_for(proposal);
+        score(&self.thresholds, proposal, trials)
+    }
+}
 
-        let recommendation = if risk > self.thresholds.max_acceptable_risk {
-            Recommendation::NeedsReview
-        } else if fitness >= self.thresholds.approve_fitness_floor {
-            Recommendation::Approve
-        } else if fitness <= self.thresholds.reject_fitness_ceiling {
-            Recommendation::Reject
-        } else {
-            Recommendation::NeedsReview
-        };
+/// Score a proposal from trial outcomes already collected by the caller
+/// (e.g. an MCP client reporting results from a sandbox it ran itself),
+/// rather than invoking a trial function a fixed number of times. Uses
+/// the same aggregation and risk-adjusted recommendation policy as
+/// [`SimulationEvaluator::evaluate`].
+pub fn evaluate_from_trials(
+    thresholds: &EvaluationThresholds,
+    proposal: &EvolutionProposal,
+    trials: Vec<TrialOutcome>,
+) -> EvaluationResult {
+    score(thresholds, proposal, trials)
+}
 
-        EvaluationResult {
-            proposal_id: proposal.id,
-            fitness,
-            risk,
-            recommendation,
-            trials,
-        }
+fn score(
+    thresholds: &EvaluationThresholds,
+    proposal: &EvolutionProposal,
+    trials: Vec<TrialOutcome>,
+) -> EvaluationResult {
+    let passed = trials.iter().filter(|t| t.succeeded).count() as f32;
+    let fitness = if trials.is_empty() {
+        0.0
+    } else {
+        passed / trials.len() as f32
+    };
+    let risk = risk_for(proposal);
+
+    let recommendation = if risk > thresholds.max_acceptable_risk {
+        Recommendation::NeedsReview
+    } else if fitness >= thresholds.approve_fitness_floor {
+        Recommendation::Approve
+    } else if fitness <= thresholds.reject_fitness_ceiling {
+        Recommendation::Reject
+    } else {
+        Recommendation::NeedsReview
+    };
+
+    EvaluationResult {
+        proposal_id: proposal.id,
+        fitness,
+        risk,
+        recommendation,
+        trials,
     }
 }
 

@@ -63,6 +63,7 @@ name = "adam-mcp"
 version = "0.1.0"
 dependencies = [
  "adam-beliefs",
+ "adam-eve",
  "adam-evolution",
  "adam-kernel",
  "adam-memory",
@@ -91,6 +92,7 @@ name = "adam-organism"
 version = "0.1.0"
 dependencies = [
  "adam-beliefs",
+ "adam-eve",
  "adam-evolution",
  "adam-governance",
  "adam-kernel",

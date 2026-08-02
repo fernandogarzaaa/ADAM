@@ -4,6 +4,9 @@
 //! here.
 
 use adam_beliefs::{Belief, BeliefError, BeliefId, BeliefRegistry};
+use adam_eve::{
+    EvaluationResult, EvaluationThresholds, Recommendation, SimulationEvaluator, TrialFn,
+};
 use adam_evolution::{
     BeliefInstabilitySignal, EvolutionEngine, EvolutionProposal, EvolutionSignals,
     EvolutionThresholds, ProposalError, ProposalId, ProposalKind, ProposalStore,
@@ -38,6 +41,10 @@ pub enum OrganismError {
         "genome field '{0}' cannot be amended automatically (only preferences.* is supported)"
     )]
     UnsupportedGenomeField(String),
+    #[error(
+        "genome field '{field}' requires an EVE evaluation recommending approval before it can be accepted (found: {found})"
+    )]
+    EveApprovalRequired { field: String, found: String },
     #[error("failed to persist genome to '{path}': {source}")]
     GenomePersistence {
         path: String,
@@ -85,6 +92,8 @@ pub struct Organism {
     proposals: ProposalStore,
     engine: EvolutionEngine,
     governance: GovernanceGate,
+    eve: SimulationEvaluator,
+    evaluations: std::collections::HashMap<ProposalId, EvaluationResult>,
     genome_path: Option<String>,
 }
 
@@ -105,6 +114,8 @@ impl Organism {
             proposals: ProposalStore::new(),
             engine: EvolutionEngine::new(EvolutionThresholds::default()),
             governance: GovernanceGate::new(EvolutionLimits::default()),
+            eve: SimulationEvaluator::new(EvaluationThresholds::default(), 5),
+            evaluations: std::collections::HashMap::new(),
             genome_path: None,
         })
     }
@@ -142,6 +153,8 @@ impl Organism {
             proposals: ProposalStore::new(),
             engine: EvolutionEngine::new(EvolutionThresholds::default()),
             governance: GovernanceGate::new(EvolutionLimits::default()),
+            eve: SimulationEvaluator::new(EvaluationThresholds::default(), 5),
+            evaluations: std::collections::HashMap::new(),
             genome_path: Some(genome_path.to_string()),
         };
         organism.persist_genome()?;
@@ -348,6 +361,44 @@ impl Organism {
         self.proposals.record(proposal)
     }
 
+    /// Score a pending proposal through EVE's sandboxed simulation before
+    /// it is accepted, storing the result so [`Organism::accept_mutation`]
+    /// can consult it. The caller supplies the actual trial mechanics
+    /// (`trial_fn`, e.g. a sandbox test replay) — this crate only wires
+    /// the result into the organism's approval gate for genome amendments
+    /// beyond `preferences.*`, which are too consequential to trust on
+    /// self-reported confidence alone.
+    pub fn evaluate_mutation(
+        &mut self,
+        id: ProposalId,
+        trial_fn: &TrialFn,
+    ) -> Result<EvaluationResult, OrganismError> {
+        let proposal = self
+            .proposals
+            .get(id)
+            .ok_or(OrganismError::ProposalNotFound(id))?;
+        let result = self.eve.evaluate(proposal, trial_fn);
+        self.evaluations.insert(id, result.clone());
+        Ok(result)
+    }
+
+    /// Like [`Organism::evaluate_mutation`], but for callers (such as the
+    /// MCP transport) that cannot pass a Rust closure and instead report
+    /// trial outcomes they already collected as plain data.
+    pub fn evaluate_mutation_from_trials(
+        &mut self,
+        id: ProposalId,
+        trials: Vec<adam_eve::TrialOutcome>,
+    ) -> Result<EvaluationResult, OrganismError> {
+        let proposal = self
+            .proposals
+            .get(id)
+            .ok_or(OrganismError::ProposalNotFound(id))?;
+        let result = adam_eve::evaluate_from_trials(self.eve.thresholds(), proposal, trials);
+        self.evaluations.insert(id, result.clone());
+        Ok(result)
+    }
+
     /// Accept a pending proposal and apply its concrete effect. This is
     /// the one place mutation actually happens — everywhere else, changes
     /// require this explicit, auditable step. Gated by the evolution rate
@@ -365,7 +416,7 @@ impl Organism {
             proposal.accept()?;
             proposal.kind.clone()
         };
-        let effect = self.apply(&kind)?;
+        let effect = self.apply(id, &kind)?;
         self.governance.log_acceptance(id, format!("{effect:?}"));
         Ok(effect)
     }
@@ -380,7 +431,11 @@ impl Organism {
         Ok(())
     }
 
-    fn apply(&mut self, kind: &ProposalKind) -> Result<AppliedEffect, OrganismError> {
+    fn apply(
+        &mut self,
+        id: ProposalId,
+        kind: &ProposalKind,
+    ) -> Result<AppliedEffect, OrganismError> {
         match kind {
             ProposalKind::RetireSkill { skill_name } => {
                 let removed = self
@@ -393,16 +448,18 @@ impl Organism {
             }
             ProposalKind::AmendGenome {
                 field,
+                current_value,
                 suggested_value,
-                ..
             } => {
-                let key = field
-                    .strip_prefix("preferences.")
-                    .ok_or_else(|| OrganismError::UnsupportedGenomeField(field.clone()))?;
                 let mut genome = self.history.head().genome.clone();
-                genome
-                    .preferences
-                    .insert(key.to_string(), suggested_value.clone());
+                if let Some(key) = field.strip_prefix("preferences.") {
+                    // Preferences are low-stakes and reversible (see
+                    // DESIGN.md), so they remain ungated by EVE.
+                    genome.preferences.insert(key.to_string(), suggested_value.clone());
+                } else {
+                    self.require_eve_approval(id, field)?;
+                    apply_list_amendment(&mut genome, field, current_value, suggested_value)?;
+                }
                 let new_version = self
                     .history
                     .commit(genome, format!("accepted mutation: amend {field}"));
@@ -419,6 +476,25 @@ impl Organism {
                 note: format!(
                     "recurring conflict on '{topic}' flagged for investigation; requires manual review, not auto-applied"
                 ),
+            }),
+        }
+    }
+
+    /// Genome fields beyond `preferences.*` (values/goals/capabilities/
+    /// policies) touch core identity and are irreversible in the sense
+    /// that rollback is a forward-only new commit, not a silent undo — so
+    /// they require a prior EVE evaluation on this exact proposal that
+    /// recommended `Approve` before they can be accepted.
+    fn require_eve_approval(&self, id: ProposalId, field: &str) -> Result<(), OrganismError> {
+        match self.evaluations.get(&id) {
+            Some(result) if result.recommendation == Recommendation::Approve => Ok(()),
+            Some(result) => Err(OrganismError::EveApprovalRequired {
+                field: field.to_string(),
+                found: format!("{:?}", result.recommendation),
+            }),
+            None => Err(OrganismError::EveApprovalRequired {
+                field: field.to_string(),
+                found: "no evaluation recorded".to_string(),
             }),
         }
     }
@@ -443,5 +519,42 @@ impl Organism {
             pending_proposals: self.proposals.pending().len(),
             accepted_proposals: self.proposals.accepted().len(),
         })
+    }
+}
+
+/// Applies an EVE-approved amendment to one of the genome's list fields
+/// (`values`, `goals`, `capabilities`, `policies`). `field` must be
+/// `"<list>.append"` (adds `suggested_value`, deduplicated) or
+/// `"<list>.remove"` (removes an entry equal to `current_value`).
+fn apply_list_amendment(
+    genome: &mut Genome,
+    field: &str,
+    current_value: &str,
+    suggested_value: &str,
+) -> Result<(), OrganismError> {
+    let (list_name, operation) = field
+        .split_once('.')
+        .ok_or_else(|| OrganismError::UnsupportedGenomeField(field.to_string()))?;
+
+    let list: &mut Vec<String> = match list_name {
+        "values" => &mut genome.values,
+        "goals" => &mut genome.goals,
+        "capabilities" => &mut genome.capabilities,
+        "policies" => &mut genome.policies,
+        _ => return Err(OrganismError::UnsupportedGenomeField(field.to_string())),
+    };
+
+    match operation {
+        "append" => {
+            if !list.iter().any(|item| item == suggested_value) {
+                list.push(suggested_value.to_string());
+            }
+            Ok(())
+        }
+        "remove" => {
+            list.retain(|item| item != current_value);
+            Ok(())
+        }
+        _ => Err(OrganismError::UnsupportedGenomeField(field.to_string())),
     }
 }

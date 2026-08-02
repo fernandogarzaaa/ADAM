@@ -56,17 +56,29 @@ separate steps means a future governance policy could require, say,
 unanimous agreement between EVE's recommendation and a human reviewer
 without EVE's code needing to change at all.
 
-## `AmendGenome` is scoped to `preferences.*` only
+## `AmendGenome` beyond `preferences.*` requires a prior EVE approval
 
-`Organism::apply` deliberately refuses to auto-amend `values`, `goals`,
-`beliefs`, `capabilities`, `skills`, or `policies` — only the free-form
-`preferences` map. Those other fields describe the organism's core
-identity and behavioral constraints; automatically rewriting them from a
-threshold-triggered proposal would undermine the "no silent evolution
-of identity" spirit of the safety requirements even though the action
-itself goes through governance. Amending them is possible, but only by
-a human directly committing a new genome version — not through the
-automated proposal pipeline.
+`Organism::apply` still applies `preferences.*` amendments unconditionally
+— they're low-stakes and reversible. `values`, `goals`, `capabilities`,
+and `policies` describe the organism's core identity and behavioral
+constraints, so automatically rewriting them from a threshold-triggered
+proposal would undermine the "no silent evolution of identity" spirit of
+the safety requirements even though the action itself goes through
+governance. Rather than refusing these fields outright, `Organism` now
+requires a prior `evaluate_mutation`/`evaluate_mutation_from_trials` call
+on that exact proposal that resulted in `Recommendation::Approve` — real
+trial evidence, not the proposal's self-reported confidence — before
+`accept_mutation` will apply it. This is the intentional "EVE approval +
+a de facto cooling-off period" policy this document previously described
+as a future requirement: a proposal must clear evaluation as a distinct,
+auditable step before it can be accepted, and `AmendGenome`'s baseline
+risk score (see "EVE only scores" above) is deliberately high enough that
+even a flawless trial run needs high proposal confidence to clear the
+default risk ceiling, rather than being rubber-stamped by fitness alone.
+`beliefs` and `skills` genome fields remain unsupported entirely — they
+are redundant with the dedicated `adam-beliefs`/`adam-skills` subsystems
+and amending them via the genome would create two sources of truth for
+the same state.
 
 ## Evolution rate limiting is a rolling window, not a fixed quota
 

@@ -91,22 +91,35 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "adam_propose_mutation",
-            "description": "Manually record an evolution proposal (retire_skill, reconcile_belief, investigate_conflict, or amend_genome).",
+            "description": "action=\"create\" (default): manually record an evolution proposal (retire_skill, reconcile_belief, investigate_conflict, or amend_genome). action=\"evaluate\": score a pending proposal through EVE using caller-reported trial outcomes (e.g. from a sandbox test run) — required before amend_genome proposals touching values/goals/capabilities/policies can be accepted; preferences.* amendments do not require this.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
+                    "action": { "type": "string", "enum": ["create", "evaluate"], "default": "create" },
                     "kind": { "type": "string", "enum": ["retire_skill", "reconcile_belief", "investigate_conflict", "amend_genome"] },
                     "skill_name": { "type": "string" },
                     "statement": { "type": "string" },
                     "topic": { "type": "string" },
-                    "field": { "type": "string" },
+                    "field": { "type": "string", "description": "preferences.<key>, or <values|goals|capabilities|policies>.<append|remove>" },
                     "current_value": { "type": "string" },
                     "suggested_value": { "type": "string" },
                     "rationale": { "type": "string" },
                     "evidence": { "type": "array", "items": { "type": "string" } },
-                    "confidence": { "type": "number" }
-                },
-                "required": ["kind", "rationale"]
+                    "confidence": { "type": "number" },
+                    "proposal_id": { "type": "string", "description": "required for action=\"evaluate\"" },
+                    "trials": {
+                        "type": "array",
+                        "description": "required for action=\"evaluate\": trial outcomes the caller already collected",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "succeeded": { "type": "boolean" },
+                                "detail": { "type": "string" }
+                            },
+                            "required": ["succeeded", "detail"]
+                        }
+                    }
+                }
             }
         }),
         json!({

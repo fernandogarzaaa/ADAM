@@ -17,6 +17,7 @@ adam-memory = { path = "../adam-memory" }
 adam-skills = { path = "../adam-skills" }
 adam-beliefs = { path = "../adam-beliefs" }
 adam-evolution = { path = "../adam-evolution" }
+adam-eve = { path = "../adam-eve" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }

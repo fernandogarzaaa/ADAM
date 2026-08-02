@@ -9,8 +9,8 @@
 mod evaluator;
 
 pub use evaluator::{
-    EvaluationResult, EvaluationThresholds, Recommendation, SimulationEvaluator, TrialFn,
-    TrialOutcome,
+    evaluate_from_trials, EvaluationResult, EvaluationThresholds, Recommendation,
+    SimulationEvaluator, TrialFn, TrialOutcome,
 };
 
 #[cfg(test)]

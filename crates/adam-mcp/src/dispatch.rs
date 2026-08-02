@@ -220,6 +220,15 @@ fn evolve(organism: &mut Organism, args: &Value) -> Result<Value, String> {
 }
 
 fn propose_mutation(organism: &mut Organism, args: &Value) -> Result<Value, String> {
+    let action = opt_str(args, "action").unwrap_or_else(|| "create".to_string());
+    match action.as_str() {
+        "create" => propose_mutation_create(organism, args),
+        "evaluate" => propose_mutation_evaluate(organism, args),
+        other => Err(format!("unknown propose_mutation action '{other}'")),
+    }
+}
+
+fn propose_mutation_create(organism: &mut Organism, args: &Value) -> Result<Value, String> {
     let kind_str = str_field(args, "kind")?;
     let rationale = str_field(args, "rationale")?;
     let evidence = opt_strings(args, "evidence");
@@ -246,6 +255,26 @@ fn propose_mutation(organism: &mut Organism, args: &Value) -> Result<Value, Stri
     let proposal = EvolutionProposal::new(kind, rationale, evidence, confidence);
     let id = organism.propose_mutation(proposal);
     Ok(json!({ "id": id }))
+}
+
+/// EVE evaluation via reported trial outcomes: `adam-eve`'s `TrialFn`
+/// mechanism assumes an in-process sandbox, which an MCP client can't
+/// supply over JSON-RPC — instead the client runs its own trials (unit
+/// tests, a staging replay, etc.) and reports the outcomes as data.
+fn propose_mutation_evaluate(organism: &mut Organism, args: &Value) -> Result<Value, String> {
+    let id = parse_uuid(args, "proposal_id")?;
+    let trials: Vec<adam_eve::TrialOutcome> = args
+        .get("trials")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|e| format!("invalid trials: {e}"))?
+        .unwrap_or_default();
+
+    let result = organism
+        .evaluate_mutation_from_trials(id, trials)
+        .map_err(|e| e.to_string())?;
+    Ok(json!(result))
 }
 
 fn accept_mutation(organism: &mut Organism, args: &Value) -> Result<Value, String> {

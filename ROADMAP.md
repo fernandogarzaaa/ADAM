@@ -12,6 +12,23 @@
 - Phase 8 — `adam-governance`: evolution rate limiting + immutable audit log.
 - Phase 9 — Docker, CI, benchmarks, and this documentation set.
 
+## Shipped (follow-up)
+
+- **Automatic signal collection.** `Organism::collect_signals`/`evolve_auto`
+  derive `EvolutionSignals` from live skill failures, belief
+  retractions, and recurring memory conflicts. `adam_evolve` auto-collects
+  when called with no args or `{"auto": true}`; explicit signals are
+  still accepted for callers that want to supply their own. Genome drift
+  signals are still caller-supplied — there is no structural indicator
+  for "this policy is stale."
+- **Genome amendment beyond `preferences.*`, gated by EVE.** `values`,
+  `goals`, `capabilities`, and `policies` can now be amended via
+  `<list>.append`/`<list>.remove` fields, but only after
+  `adam_propose_mutation` with `action: "evaluate"` records an EVE
+  evaluation on that exact proposal recommending `Approve`. `adam-eve`
+  is now actually wired into `adam-organism` (previously an unused
+  workspace member) — see DESIGN.md.
+
 ## Not yet built
 
 These are explicitly out of scope for this PR and are natural next steps:
@@ -24,16 +41,6 @@ These are explicitly out of scope for this PR and are natural next steps:
   export/import CLI yet for moving an organism's full state between LLM
   backends. The MCP server itself is the practical migration path today
   (point a new client at the same `ADAM_MEMORY_PATH` and genome store).
-- **Automatic signal collection.** `adam_evolve` currently requires a
-  caller to supply `EvolutionSignals`; a scheduled background job that
-  derives signals from live skill/belief/memory state (chronic failures,
-  retraction counts, recurring conflicts) instead of requiring an
-  external caller to assemble them would make evolution proactive rather
-  than on-demand.
-- **Genome amendment beyond `preferences.*`.** See DESIGN.md for why this
-  is intentionally restricted for now — broadening it requires a more
-  deliberate policy (e.g. requiring EVE approval + a cooling-off period)
-  before it's safe to automate.
 - **Multi-organism / multi-tenant support.** `Organism` and the MCP
   server currently model exactly one organism per process.
 - **Vector index beyond O(n) cosine scoring.** Fine at organism scale;
