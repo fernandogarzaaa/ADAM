@@ -7,6 +7,7 @@
 //! decays with disuse, consolidates from repeated episodes into semantic
 //! knowledge, and resolves contradictions without ever deleting history.
 
+mod ann;
 mod conflict;
 mod decay;
 mod graph;
@@ -14,6 +15,7 @@ mod record;
 mod retrieval;
 mod store;
 
+pub use ann::AnnIndex;
 pub use record::{MemoryId, MemoryKind, MemoryRecord, MemoryRelation, Provenance, RelationKind};
 pub use retrieval::cosine_similarity;
 pub use store::{MemoryError, MemoryStore};

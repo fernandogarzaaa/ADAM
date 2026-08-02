@@ -88,10 +88,14 @@ fn memory_query(organism: &mut Organism, args: &Value) -> Result<Value, String> 
     let query = str_field(args, "query")?;
     let kind = opt_str(args, "kind").and_then(|k| MemoryKind::parse(&k));
     let top_k = opt_u64(args, "top_k", 5) as usize;
+    let approximate = args.get("approximate").and_then(Value::as_bool) == Some(true);
 
-    let results = organism
-        .memory_query(&query, kind, top_k)
-        .map_err(|e| e.to_string())?;
+    let results = if approximate {
+        organism.memory_query_ann(&query, top_k)
+    } else {
+        organism.memory_query(&query, kind, top_k)
+    }
+    .map_err(|e| e.to_string())?;
     Ok(json!(results
         .into_iter()
         .map(|(record, score)| json!({ "record": record, "score": score }))

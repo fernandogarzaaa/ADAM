@@ -506,4 +506,33 @@ mod tests {
         let effect = organism.accept_mutation(id).unwrap();
         assert!(matches!(effect, AppliedEffect::GenomeAmended { .. }));
     }
+
+    #[test]
+    fn memory_query_ann_finds_the_same_top_hit_as_the_exact_scan() {
+        let organism = new_organism();
+        let id = organism
+            .memory_store(
+                MemoryKind::Episodic,
+                "cargo build failed: missing dependency",
+                "tool:cargo_build",
+                vec!["exit code 101".to_string()],
+                0.9,
+                0.05,
+            )
+            .unwrap();
+        organism
+            .memory_store(
+                MemoryKind::Episodic,
+                "the weather is sunny today",
+                "tool:weather",
+                vec![],
+                0.9,
+                0.05,
+            )
+            .unwrap();
+
+        let results = organism.memory_query_ann("cargo build failure", 1).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0.id, id);
+    }
 }

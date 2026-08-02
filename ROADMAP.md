@@ -28,6 +28,14 @@
   evaluation on that exact proposal recommending `Approve`. `adam-eve`
   is now actually wired into `adam-organism` (previously an unused
   workspace member) — see DESIGN.md.
+- **ANN vector index.** `adam_memory::AnnIndex` (HNSW via
+  `instant-distance`) is a caller-built snapshot alternative to the exact
+  O(n) cosine scan. `Organism::memory_query_ann` / `adam_memory_query`
+  with `approximate: true` use it. It does not update incrementally —
+  each call builds a fresh snapshot from current records — so it trades
+  index-build cost for approximate results; callers with high query
+  volume relative to write volume should build once via
+  `MemoryStore::build_ann_index` and reuse it.
 
 ## Not yet built
 
@@ -43,6 +51,3 @@ These are explicitly out of scope for this PR and are natural next steps:
   (point a new client at the same `ADAM_MEMORY_PATH` and genome store).
 - **Multi-organism / multi-tenant support.** `Organism` and the MCP
   server currently model exactly one organism per process.
-- **Vector index beyond O(n) cosine scoring.** Fine at organism scale;
-  would need an ANN index (HNSW, etc.) if memory volume grows into the
-  millions of records.

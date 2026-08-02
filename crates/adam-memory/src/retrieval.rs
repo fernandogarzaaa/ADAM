@@ -1,5 +1,6 @@
 //! Cosine-similarity vector retrieval over stored memory embeddings.
 
+use crate::ann::AnnIndex;
 use crate::record::{MemoryKind, MemoryRecord};
 use crate::store::{MemoryError, MemoryStore};
 
@@ -9,7 +10,9 @@ impl MemoryStore {
     ///
     /// This scores every candidate in-process rather than using an ANN
     /// index — correct and simple for the organism-scale memory volumes
-    /// ADAM targets, at the cost of O(n) per query.
+    /// ADAM targets, at the cost of O(n) per query. See
+    /// [`MemoryStore::build_ann_index`] for an approximate alternative
+    /// that scales better past organism scale.
     pub fn query_similar(
         &self,
         query_embedding: &[f32],
@@ -32,6 +35,15 @@ impl MemoryStore {
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         scored.truncate(top_k);
         Ok(scored)
+    }
+
+    /// Build an [`AnnIndex`] snapshot over every stored memory. Intended
+    /// for callers with memory volumes large enough that
+    /// [`MemoryStore::query_similar`]'s O(n) scan becomes a bottleneck —
+    /// build once (e.g. on startup or after a batch of writes) and reuse
+    /// the index across many queries rather than rebuilding per query.
+    pub fn build_ann_index(&self) -> Result<AnnIndex, MemoryError> {
+        Ok(AnnIndex::build(&self.all()?))
     }
 }
 

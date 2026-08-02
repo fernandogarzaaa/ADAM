@@ -83,7 +83,7 @@ to `adam_genome.json`).
 |---|---|
 | `adam_identity` | Current genome identity snapshot |
 | `adam_memory_store` | Store an episodic/semantic/procedural/self memory |
-| `adam_memory_query` | Similarity-retrieve memories |
+| `adam_memory_query` | Similarity-retrieve memories (`approximate: true` for HNSW ANN search) |
 | `adam_beliefs` | List active beliefs, or form a new one from evidence |
 | `adam_skills` | Full skill lifecycle (discover → … → evolve) via `action` |
 | `adam_evolve` | Analyze signals into evolution proposals |

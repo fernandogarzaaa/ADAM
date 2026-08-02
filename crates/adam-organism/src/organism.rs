@@ -241,6 +241,29 @@ impl Organism {
         Ok(self.memory.query_similar(&embed(query), kind, top_k)?)
     }
 
+    /// Approximate-nearest-neighbor counterpart to [`Organism::memory_query`],
+    /// for memory volumes large enough that the exact O(n) scan becomes a
+    /// bottleneck. Builds a fresh [`adam_memory::AnnIndex`] snapshot per
+    /// call, so it trades a build cost for approximate results — callers
+    /// with very high query volume relative to write volume may prefer to
+    /// build once via `self.memory().build_ann_index()` and query that
+    /// snapshot repeatedly instead.
+    pub fn memory_query_ann(
+        &self,
+        query: &str,
+        top_k: usize,
+    ) -> Result<Vec<(MemoryRecord, f32)>, OrganismError> {
+        let index = self.memory.build_ann_index()?;
+        let hits = index.query(&embed(query), top_k);
+        let mut records = Vec::with_capacity(hits.len());
+        for (id, score) in hits {
+            if let Some(record) = self.memory.get(id)? {
+                records.push((record, score));
+            }
+        }
+        Ok(records)
+    }
+
     pub fn memory(&self) -> &MemoryStore {
         &self.memory
     }

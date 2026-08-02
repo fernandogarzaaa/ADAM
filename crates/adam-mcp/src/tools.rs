@@ -31,13 +31,14 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "adam_memory_query",
-            "description": "Retrieve memories most similar to a query, optionally filtered by kind.",
+            "description": "Retrieve memories most similar to a query, optionally filtered by kind. Set approximate=true to use an HNSW ANN index instead of the exact O(n) scan (kind filtering is not applied in approximate mode).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "query": { "type": "string" },
                     "kind": { "type": "string", "enum": ["episodic", "semantic", "procedural", "self_knowledge"] },
-                    "top_k": { "type": "integer" }
+                    "top_k": { "type": "integer" },
+                    "approximate": { "type": "boolean", "default": false }
                 },
                 "required": ["query"]
             }
