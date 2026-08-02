@@ -62,7 +62,10 @@ MCP stdio transport): `initialize` → `notifications/initialized` →
 persist memory across restarts (defaults to `adam_memory.db` in the working
 directory; use `:memory:` for an ephemeral instance), and `ADAM_GENOME_PATH`
 at a file path to persist genome identity/history across restarts (defaults
-to `adam_genome.json`).
+to `adam_genome.json`). Every `tools/call` also accepts an optional
+`organism_id` argument for multi-organism use (defaults to `"default"`,
+which uses the two env vars above); other ids get their state under
+`ADAM_DATA_DIR` (defaults to `.`) as `<id>_memory.db`/`<id>_genome.json`.
 
 ### Claude Desktop configuration
 

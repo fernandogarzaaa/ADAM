@@ -36,6 +36,15 @@
   index-build cost for approximate results; callers with high query
   volume relative to write volume should build once via
   `MemoryStore::build_ann_index` and reuse it.
+- **Multi-organism / multi-tenant support.** `adam_mcp::OrganismPool`
+  lazily creates and holds one `Organism` per `organism_id`. Every
+  `tools/call` accepts an optional `organism_id` argument (default
+  `"default"`, which preserves the original `ADAM_MEMORY_PATH`/
+  `ADAM_GENOME_PATH` single-organism behavior); other ids get their
+  state under `ADAM_DATA_DIR` (default `.`) as
+  `<id>_memory.db`/`<id>_genome.json`. There is no cross-process
+  coordination or eviction — this is in-process multi-tenancy for one
+  server, not a distributed system.
 
 ## Not yet built
 
@@ -49,5 +58,3 @@ These are explicitly out of scope for this PR and are natural next steps:
   export/import CLI yet for moving an organism's full state between LLM
   backends. The MCP server itself is the practical migration path today
   (point a new client at the same `ADAM_MEMORY_PATH` and genome store).
-- **Multi-organism / multi-tenant support.** `Organism` and the MCP
-  server currently model exactly one organism per process.
