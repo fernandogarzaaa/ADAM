@@ -43,8 +43,23 @@
   `ADAM_GENOME_PATH` single-organism behavior); other ids get their
   state under `ADAM_DATA_DIR` (default `.`) as
   `<id>_memory.db`/`<id>_genome.json`. There is no cross-process
-  coordination or eviction — this is in-process multi-tenancy for one
-  server, not a distributed system.
+  coordination — this is in-process multi-tenancy for one server, not a
+  distributed system. `organism_id` is validated against
+  `[A-Za-z0-9_-]{1,64}` before use (it is interpolated into a filesystem
+  path) and the pool holds at most 64 organisms in memory at once,
+  evicting the least-recently-used past that cap; eviction only drops the
+  in-memory copy, so a later request for an evicted id transparently
+  reloads it via the factory.
+- **Hardening pass on the multi-organism/EVE-gating follow-ups.** EVE's
+  risk scoring no longer depends on a proposal's self-reported
+  `confidence` (see DESIGN.md), evaluations now require a minimum trial
+  count to avoid being satisfied by a single self-reported "success",
+  `accept_mutation` validates preconditions before mutating proposal
+  state instead of after, no-op genome list amendments no longer commit
+  an empty-diff genome version, belief-retraction signal aggregation is
+  deterministic instead of depending on `HashMap` iteration order, and
+  `Organism.evaluations` is pruned as proposals are accepted/rejected
+  instead of growing unboundedly.
 
 ## Not yet built
 

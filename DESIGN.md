@@ -71,10 +71,22 @@ trial evidence, not the proposal's self-reported confidence — before
 `accept_mutation` will apply it. This is the intentional "EVE approval +
 a de facto cooling-off period" policy this document previously described
 as a future requirement: a proposal must clear evaluation as a distinct,
-auditable step before it can be accepted, and `AmendGenome`'s baseline
-risk score (see "EVE only scores" above) is deliberately high enough that
-even a flawless trial run needs high proposal confidence to clear the
-default risk ceiling, rather than being rubber-stamped by fitness alone.
+auditable step before it can be accepted.
+
+Risk (`risk_for` in `adam-eve`) is a fixed function of `ProposalKind`
+only — never the proposal's own self-reported `confidence` — precisely
+because factoring in a self-reported field would let a caller lower its
+own risk score simply by asserting higher confidence. `AmendGenome`'s
+baseline risk (`0.6`) sits exactly at the default `max_acceptable_risk`
+(`0.6`), so it is *not* a hard block: sufficient trial evidence (at
+least `SimulationEvaluator::trial_count` trials, all passing) can still
+reach `Approve`. Deployments that want genome amendments to require
+human sign-off unconditionally should raise `max_acceptable_risk` above
+`0.6` in `EvaluationThresholds`, which forces every `AmendGenome`
+evaluation to `NeedsReview` regardless of trial outcome. Evaluations
+reporting fewer than `trial_count` trials are likewise forced to
+`NeedsReview` — a client can't substitute one self-reported "success"
+for the configured minimum evidentiary volume.
 `beliefs` and `skills` genome fields remain unsupported entirely — they
 are redundant with the dedicated `adam-beliefs`/`adam-skills` subsystems
 and amending them via the genome would create two sources of truth for
@@ -98,3 +110,28 @@ produce a note. Automatically deciding *which* belief is correct or
 *what* a recurring conflict means requires judgment no threshold rule
 should have — the proposal correctly flags the problem, but resolving it
 is left to whatever reviews the audit log.
+
+## Multi-organism hardening: validated ids, bounded pool, ordered checks
+
+`OrganismPool` (Phase 10 follow-up) treats `organism_id` as
+attacker-controlled input arriving straight off the MCP transport, since
+the production factory interpolates it into a filesystem path. Ids are
+restricted to `[A-Za-z0-9_-]{1,64}` before ever reaching the factory, and
+the pool caps resident organisms at `MAX_ORGANISMS` (64), evicting the
+least-recently-used one from memory (not from disk) past that cap — an
+unbounded pool driven by attacker-controlled ids is a file-descriptor and
+memory exhaustion vector.
+
+`Organism::accept_mutation` runs its precondition checks
+(`validate_applicable`) *before* calling `proposal.accept()`, not after.
+A failing precondition (missing EVE approval, an already-removed skill)
+must leave the proposal retriable or rejectable rather than permanently
+stuck `Accepted` with no effect applied and no audit entry — mutating the
+proposal's state is the one step in this path that can't be undone, so
+every fallible check runs first.
+
+`Organism.evaluations` is pruned on both `accept_mutation` and
+`reject_mutation`: once a proposal leaves the `Proposed` state, its
+recorded evaluation has served its purpose and would otherwise
+accumulate unboundedly across the organism's lifetime.
+
