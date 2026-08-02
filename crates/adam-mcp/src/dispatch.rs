@@ -91,7 +91,7 @@ fn memory_query(organism: &mut Organism, args: &Value) -> Result<Value, String> 
     let approximate = args.get("approximate").and_then(Value::as_bool) == Some(true);
 
     let results = if approximate {
-        organism.memory_query_ann(&query, top_k)
+        organism.memory_query_ann(&query, kind, top_k)
     } else {
         organism.memory_query(&query, kind, top_k)
     }

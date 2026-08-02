@@ -37,13 +37,18 @@ impl MemoryStore {
         Ok(scored)
     }
 
-    /// Build an [`AnnIndex`] snapshot over every stored memory. Intended
-    /// for callers with memory volumes large enough that
-    /// [`MemoryStore::query_similar`]'s O(n) scan becomes a bottleneck —
-    /// build once (e.g. on startup or after a batch of writes) and reuse
-    /// the index across many queries rather than rebuilding per query.
-    pub fn build_ann_index(&self) -> Result<AnnIndex, MemoryError> {
-        Ok(AnnIndex::build(&self.all()?))
+    /// Build an [`AnnIndex`] snapshot over every stored memory, or only
+    /// those matching `kind` when given. Intended for callers with memory
+    /// volumes large enough that [`MemoryStore::query_similar`]'s O(n)
+    /// scan becomes a bottleneck — build once (e.g. on startup or after a
+    /// batch of writes) and reuse the index across many queries rather
+    /// than rebuilding per query.
+    pub fn build_ann_index(&self, kind: Option<MemoryKind>) -> Result<AnnIndex, MemoryError> {
+        let records = match kind {
+            Some(k) => self.query_by_kind(k)?,
+            None => self.all()?,
+        };
+        Ok(AnnIndex::build(&records))
     }
 }
 

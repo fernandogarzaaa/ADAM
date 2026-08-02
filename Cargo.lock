@@ -71,6 +71,7 @@ dependencies = [
  "adam-skills",
  "serde",
  "serde_json",
+ "thiserror",
  "uuid",
 ]
 

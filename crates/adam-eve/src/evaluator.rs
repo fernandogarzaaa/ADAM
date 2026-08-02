@@ -82,9 +82,16 @@ impl SimulationEvaluator {
         &self.thresholds
     }
 
+    /// The number of trials a properly-evidenced evaluation must contain.
+    /// [`evaluate_from_trials`] uses this to reject evaluations built from
+    /// too few reported outcomes to trust (see its doc comment).
+    pub fn trial_count(&self) -> u32 {
+        self.trial_count
+    }
+
     pub fn evaluate(&self, proposal: &EvolutionProposal, trial_fn: &TrialFn) -> EvaluationResult {
         let trials: Vec<TrialOutcome> = (0..self.trial_count).map(|_| trial_fn(proposal)).collect();
-        score(&self.thresholds, proposal, trials)
+        score(&self.thresholds, self.trial_count, proposal, trials)
     }
 }
 
@@ -93,16 +100,24 @@ impl SimulationEvaluator {
 /// rather than invoking a trial function a fixed number of times. Uses
 /// the same aggregation and risk-adjusted recommendation policy as
 /// [`SimulationEvaluator::evaluate`].
+///
+/// `min_trials` must match the evaluator's configured `trial_count`
+/// (see [`SimulationEvaluator::trial_count`]): a caller reporting fewer
+/// trials than a real sandboxed run would have produced is reporting
+/// insufficient evidence, not a shortcut to a favorable score, so it is
+/// forced to `NeedsReview` regardless of the reported fitness.
 pub fn evaluate_from_trials(
     thresholds: &EvaluationThresholds,
+    min_trials: u32,
     proposal: &EvolutionProposal,
     trials: Vec<TrialOutcome>,
 ) -> EvaluationResult {
-    score(thresholds, proposal, trials)
+    score(thresholds, min_trials, proposal, trials)
 }
 
 fn score(
     thresholds: &EvaluationThresholds,
+    min_trials: u32,
     proposal: &EvolutionProposal,
     trials: Vec<TrialOutcome>,
 ) -> EvaluationResult {
@@ -114,15 +129,16 @@ fn score(
     };
     let risk = risk_for(proposal);
 
-    let recommendation = if risk > thresholds.max_acceptable_risk {
-        Recommendation::NeedsReview
-    } else if fitness >= thresholds.approve_fitness_floor {
-        Recommendation::Approve
-    } else if fitness <= thresholds.reject_fitness_ceiling {
-        Recommendation::Reject
-    } else {
-        Recommendation::NeedsReview
-    };
+    let recommendation =
+        if (trials.len() as u32) < min_trials || risk > thresholds.max_acceptable_risk {
+            Recommendation::NeedsReview
+        } else if fitness >= thresholds.approve_fitness_floor {
+            Recommendation::Approve
+        } else if fitness <= thresholds.reject_fitness_ceiling {
+            Recommendation::Reject
+        } else {
+            Recommendation::NeedsReview
+        };
 
     EvaluationResult {
         proposal_id: proposal.id,
@@ -133,17 +149,20 @@ fn score(
     }
 }
 
-/// Intrinsic risk of a proposal kind, independent of trial outcomes.
-/// Genome amendments carry the highest baseline risk since they touch
-/// core identity; skill retirement is lowest since it only narrows
-/// available behavior.
+/// Intrinsic risk of a proposal kind, independent of trial outcomes and
+/// of the proposal's own self-reported `confidence` — factoring in
+/// self-reported confidence would let a caller lower a proposal's risk
+/// score simply by asserting higher confidence, defeating the point of
+/// scoring proposals by external trial evidence rather than trusting
+/// what they claim about themselves. Genome amendments carry the highest
+/// baseline risk since they touch core identity; skill retirement is
+/// lowest since it only narrows available behavior.
 fn risk_for(proposal: &EvolutionProposal) -> f32 {
     use adam_evolution::ProposalKind::*;
-    let base = match &proposal.kind {
+    match &proposal.kind {
         RetireSkill { .. } => 0.1,
         ReconcileBelief { .. } => 0.3,
         InvestigateConflict { .. } => 0.2,
         AmendGenome { .. } => 0.6,
-    };
-    (base + (1.0 - proposal.confidence) * 0.2).clamp(0.0, 1.0)
+    }
 }

@@ -38,7 +38,7 @@ pub enum OrganismError {
     #[error("skill '{0}' not found")]
     SkillNotFound(String),
     #[error(
-        "genome field '{0}' cannot be amended automatically (only preferences.* is supported)"
+        "genome field '{0}' is not a supported amendment target (expected preferences.<key>, or <values|goals|capabilities|policies>.<append|remove>)"
     )]
     UnsupportedGenomeField(String),
     #[error(
@@ -247,13 +247,19 @@ impl Organism {
     /// call, so it trades a build cost for approximate results — callers
     /// with very high query volume relative to write volume may prefer to
     /// build once via `self.memory().build_ann_index()` and query that
-    /// snapshot repeatedly instead.
+    /// snapshot repeatedly instead. Building per call also means a single
+    /// MCP tool invocation pays the full O(n log n) index-build cost
+    /// before it can answer one query, so for organism-scale memory
+    /// volumes (see DESIGN.md) `Organism::memory_query`'s exact scan is
+    /// typically faster in practice; this path exists for callers that
+    /// have already grown past that point.
     pub fn memory_query_ann(
         &self,
         query: &str,
+        kind: Option<MemoryKind>,
         top_k: usize,
     ) -> Result<Vec<(MemoryRecord, f32)>, OrganismError> {
-        let index = self.memory.build_ann_index()?;
+        let index = self.memory.build_ann_index(kind)?;
         let hits = index.query(&embed(query), top_k);
         let mut records = Vec::with_capacity(hits.len());
         for (id, score) in hits {
@@ -317,29 +323,40 @@ impl Organism {
             })
             .collect();
 
-        let mut retractions: std::collections::HashMap<String, (f32, u32)> =
-            std::collections::HashMap::new();
+        let mut retractions: std::collections::HashMap<
+            String,
+            (f32, chrono::DateTime<chrono::Utc>, u32),
+        > = std::collections::HashMap::new();
         for belief in self.beliefs.all() {
             if !belief.is_active() {
                 retractions
                     .entry(belief.statement.clone())
-                    .and_modify(|(confidence, count)| {
-                        *confidence = belief.confidence;
+                    .and_modify(|(confidence, updated_at, count)| {
+                        // `self.beliefs.all()` iterates a HashMap, so
+                        // insertion order is nondeterministic — keep the
+                        // most-recently-updated belief's confidence
+                        // rather than whichever happened to be visited
+                        // last, so the signal is reproducible.
+                        if belief.updated_at > *updated_at {
+                            *confidence = belief.confidence;
+                            *updated_at = belief.updated_at;
+                        }
                         *count += 1;
                     })
-                    .or_insert((belief.confidence, 1));
+                    .or_insert((belief.confidence, belief.updated_at, 1));
             }
         }
-        let belief_instabilities = retractions
+        let mut belief_instabilities: Vec<BeliefInstabilitySignal> = retractions
             .into_iter()
             .map(
-                |(statement, (confidence, retraction_count))| BeliefInstabilitySignal {
+                |(statement, (confidence, _, retraction_count))| BeliefInstabilitySignal {
                     statement,
                     confidence,
                     retraction_count,
                 },
             )
             .collect();
+        belief_instabilities.sort_by(|a, b| a.statement.cmp(&b.statement));
 
         let recurring_conflicts = self
             .memory
@@ -417,7 +434,12 @@ impl Organism {
             .proposals
             .get(id)
             .ok_or(OrganismError::ProposalNotFound(id))?;
-        let result = adam_eve::evaluate_from_trials(self.eve.thresholds(), proposal, trials);
+        let result = adam_eve::evaluate_from_trials(
+            self.eve.thresholds(),
+            self.eve.trial_count(),
+            proposal,
+            trials,
+        );
         self.evaluations.insert(id, result.clone());
         Ok(result)
     }
@@ -434,14 +456,60 @@ impl Organism {
         let kind = {
             let proposal = self
                 .proposals
+                .get(id)
+                .ok_or(OrganismError::ProposalNotFound(id))?;
+            proposal.kind.clone()
+        };
+
+        // Validate before mutating the proposal's state: if this were
+        // done after `proposal.accept()`, a validation failure (missing
+        // EVE approval, an already-removed skill, ...) would leave the
+        // proposal permanently stuck `Accepted` with no effect applied
+        // and no audit entry — no way to retry or reject it.
+        self.validate_applicable(id, &kind)?;
+
+        {
+            let proposal = self
+                .proposals
                 .get_mut(id)
                 .ok_or(OrganismError::ProposalNotFound(id))?;
             proposal.accept()?;
-            proposal.kind.clone()
-        };
+        }
+
         let effect = self.apply(id, &kind)?;
         self.governance.log_acceptance(id, format!("{effect:?}"));
+        // The evaluation recorded against this proposal id has served its
+        // purpose (gating this exact acceptance); keep it from
+        // accumulating forever in `evaluations`, which is otherwise never
+        // pruned as proposals cycle through evaluate -> accept/reject.
+        self.evaluations.remove(&id);
         Ok(effect)
+    }
+
+    /// Read-only precondition checks for [`Organism::apply`], run before
+    /// the proposal is marked `Accepted` so a failing precondition leaves
+    /// the proposal untouched instead of stuck.
+    fn validate_applicable(
+        &self,
+        id: ProposalId,
+        kind: &ProposalKind,
+    ) -> Result<(), OrganismError> {
+        match kind {
+            ProposalKind::RetireSkill { skill_name } => self
+                .skills
+                .find_by_name(skill_name)
+                .map(|_| ())
+                .ok_or_else(|| OrganismError::SkillNotFound(skill_name.clone())),
+            ProposalKind::AmendGenome { field, .. } => {
+                if field.strip_prefix("preferences.").is_none() {
+                    self.require_eve_approval(id, field)?;
+                }
+                Ok(())
+            }
+            ProposalKind::ReconcileBelief { .. } | ProposalKind::InvestigateConflict { .. } => {
+                Ok(())
+            }
+        }
     }
 
     pub fn reject_mutation(&mut self, id: ProposalId) -> Result<(), OrganismError> {
@@ -451,6 +519,9 @@ impl Organism {
             .ok_or(OrganismError::ProposalNotFound(id))?;
         proposal.reject()?;
         self.governance.log_rejection(id);
+        // See the matching cleanup in `accept_mutation`: a rejected
+        // proposal's evaluation has no further use.
+        self.evaluations.remove(&id);
         Ok(())
     }
 
@@ -475,14 +546,32 @@ impl Organism {
                 suggested_value,
             } => {
                 let mut genome = self.history.head().genome.clone();
-                if let Some(key) = field.strip_prefix("preferences.") {
+                let changed = if let Some(key) = field.strip_prefix("preferences.") {
                     // Preferences are low-stakes and reversible (see
                     // DESIGN.md), so they remain ungated by EVE.
-                    genome.preferences.insert(key.to_string(), suggested_value.clone());
+                    let previous = genome.preferences.get(key).cloned();
+                    genome
+                        .preferences
+                        .insert(key.to_string(), suggested_value.clone());
+                    previous.as_deref() != Some(suggested_value.as_str())
                 } else {
                     self.require_eve_approval(id, field)?;
-                    apply_list_amendment(&mut genome, field, current_value, suggested_value)?;
+                    apply_list_amendment(&mut genome, field, current_value, suggested_value)?
+                };
+
+                if !changed {
+                    // Nothing actually changed (e.g. appending a value
+                    // already present, or removing one that's absent) —
+                    // committing anyway would create a genome version
+                    // with an empty diff, polluting `adam_history`'s
+                    // rollback/diff chain with no-op entries.
+                    return Ok(AppliedEffect::AdvisoryOnly {
+                        note: format!(
+                            "amend {field}: suggested value already reflected in the genome; no new version created"
+                        ),
+                    });
                 }
+
                 let new_version = self
                     .history
                     .commit(genome, format!("accepted mutation: amend {field}"));
@@ -548,13 +637,15 @@ impl Organism {
 /// Applies an EVE-approved amendment to one of the genome's list fields
 /// (`values`, `goals`, `capabilities`, `policies`). `field` must be
 /// `"<list>.append"` (adds `suggested_value`, deduplicated) or
-/// `"<list>.remove"` (removes an entry equal to `current_value`).
+/// `"<list>.remove"` (removes an entry equal to `current_value`). Returns
+/// whether the list actually changed, so callers can avoid committing a
+/// no-op genome version.
 fn apply_list_amendment(
     genome: &mut Genome,
     field: &str,
     current_value: &str,
     suggested_value: &str,
-) -> Result<(), OrganismError> {
+) -> Result<bool, OrganismError> {
     let (list_name, operation) = field
         .split_once('.')
         .ok_or_else(|| OrganismError::UnsupportedGenomeField(field.to_string()))?;
@@ -569,14 +660,17 @@ fn apply_list_amendment(
 
     match operation {
         "append" => {
-            if !list.iter().any(|item| item == suggested_value) {
+            if list.iter().any(|item| item == suggested_value) {
+                Ok(false)
+            } else {
                 list.push(suggested_value.to_string());
+                Ok(true)
             }
-            Ok(())
         }
         "remove" => {
+            let len_before = list.len();
             list.retain(|item| item != current_value);
-            Ok(())
+            Ok(list.len() != len_before)
         }
         _ => Err(OrganismError::UnsupportedGenomeField(field.to_string())),
     }

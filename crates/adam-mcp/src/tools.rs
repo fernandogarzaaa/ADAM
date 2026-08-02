@@ -31,7 +31,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "adam_memory_query",
-            "description": "Retrieve memories most similar to a query, optionally filtered by kind. Set approximate=true to use an HNSW ANN index instead of the exact O(n) scan (kind filtering is not applied in approximate mode).",
+            "description": "Retrieve memories most similar to a query, optionally filtered by kind. Set approximate=true to use an HNSW ANN index instead of the exact O(n) scan; the index is rebuilt fresh on every call, so this is only worthwhile once memory volume is large enough that the exact scan is the bottleneck.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

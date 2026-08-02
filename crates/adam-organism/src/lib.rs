@@ -469,11 +469,27 @@ mod tests {
         );
         let id = organism.propose_mutation(proposal);
 
-        // Half the trials fail -> fitness 0.5, in the NeedsReview band.
+        // 3 of 5 trials succeed -> fitness 0.6, in the NeedsReview band
+        // (below the 0.75 approve floor, above the 0.3 reject ceiling).
+        // 5 trials matches the organism's default evaluator trial count,
+        // so this exercises the fitness-band path rather than the
+        // insufficient-evidence path (see the test below).
         let trials = vec![
             adam_eve::TrialOutcome {
                 succeeded: true,
                 detail: "ok".to_string(),
+            },
+            adam_eve::TrialOutcome {
+                succeeded: true,
+                detail: "ok".to_string(),
+            },
+            adam_eve::TrialOutcome {
+                succeeded: true,
+                detail: "ok".to_string(),
+            },
+            adam_eve::TrialOutcome {
+                succeeded: false,
+                detail: "regressed".to_string(),
             },
             adam_eve::TrialOutcome {
                 succeeded: false,
@@ -485,6 +501,43 @@ mod tests {
         let err = organism.accept_mutation(id).unwrap_err();
         assert!(matches!(err, OrganismError::EveApprovalRequired { .. }));
         assert!(organism.genome().goals.is_empty());
+    }
+
+    #[test]
+    fn reporting_fewer_trials_than_the_evaluator_requires_cannot_force_an_approval() {
+        // A client reporting one successful trial gets fitness 1.0 by the
+        // raw pass-rate formula, but that isn't real evidence of a 5-run
+        // sandbox replay — it must not be enough to unlock a genome
+        // amendment. This is the negative case for the EVE approval gate:
+        // self-reported trial counts below the evaluator's configured
+        // minimum are treated as insufficient evidence, not a shortcut.
+        let mut organism = new_organism();
+        let proposal = adam_evolution::EvolutionProposal::new(
+            adam_evolution::ProposalKind::AmendGenome {
+                field: "values.append".to_string(),
+                current_value: String::new(),
+                suggested_value: "curiosity".to_string(),
+            },
+            "single anecdotal success",
+            vec![],
+            1.0,
+        );
+        let id = organism.propose_mutation(proposal);
+
+        let trials = vec![adam_eve::TrialOutcome {
+            succeeded: true,
+            detail: "sandbox replay ok".to_string(),
+        }];
+        let evaluation = organism.evaluate_mutation_from_trials(id, trials).unwrap();
+        assert_eq!(evaluation.fitness, 1.0);
+        assert_eq!(
+            evaluation.recommendation,
+            adam_eve::Recommendation::NeedsReview
+        );
+
+        let err = organism.accept_mutation(id).unwrap_err();
+        assert!(matches!(err, OrganismError::EveApprovalRequired { .. }));
+        assert!(organism.genome().values.is_empty());
     }
 
     #[test]
@@ -531,8 +584,41 @@ mod tests {
             )
             .unwrap();
 
-        let results = organism.memory_query_ann("cargo build failure", 1).unwrap();
+        let results = organism
+            .memory_query_ann("cargo build failure", None, 1)
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0.id, id);
+    }
+
+    #[test]
+    fn memory_query_ann_respects_a_kind_filter() {
+        let organism = new_organism();
+        organism
+            .memory_store(
+                MemoryKind::Episodic,
+                "cargo build failed: missing dependency",
+                "tool:cargo_build",
+                vec!["exit code 101".to_string()],
+                0.9,
+                0.05,
+            )
+            .unwrap();
+        let semantic_id = organism
+            .memory_store(
+                MemoryKind::Semantic,
+                "cargo build failed: missing dependency",
+                "tool:cargo_build",
+                vec![],
+                0.9,
+                0.05,
+            )
+            .unwrap();
+
+        let results = organism
+            .memory_query_ann("cargo build failure", Some(MemoryKind::Semantic), 5)
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0.id, semantic_id);
     }
 }

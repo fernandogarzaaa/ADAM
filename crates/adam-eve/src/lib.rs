@@ -102,9 +102,16 @@ mod tests {
         let high_result = evaluator.evaluate(&high_risk, &always_pass);
 
         assert!(high_result.risk > low_result.risk);
-        // High fitness but high risk on a genome amendment forces review
-        // rather than a silent approve, even though trials all passed.
-        assert_eq!(high_result.recommendation, Recommendation::NeedsReview);
+        // Intrinsic risk is now a fixed function of proposal kind only —
+        // it no longer factors in the proposal's self-reported
+        // confidence, so a caller can't lower it by simply asserting
+        // higher confidence. AmendGenome's baseline risk sits exactly at
+        // the default `max_acceptable_risk` threshold, so strong trial
+        // evidence can still reach `Approve`; raising
+        // `max_acceptable_risk` in `EvaluationThresholds` is the
+        // intended way to block genome amendments outright regardless of
+        // trial outcome.
+        assert_eq!(high_result.recommendation, Recommendation::Approve);
         assert_eq!(low_result.recommendation, Recommendation::Approve);
     }
 }
