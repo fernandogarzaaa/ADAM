@@ -219,7 +219,22 @@ impl FitnessProvider for Cp1Subprocess {
                 .stdin
                 .as_mut()
                 .expect("stdin was configured as a pipe");
-            writeln!(stdin, "{}", envelope.to_line()).map_err(FitnessError::Transport)?;
+            if let Err(err) = writeln!(stdin, "{}", envelope.to_line()) {
+                let _ = child.wait();
+                // A broken pipe here means the provider exited before it could
+                // read the request — which is the same condition as exiting
+                // before answering it, and deserves the same diagnosis.
+                // Reporting it as a generic transport error would make one
+                // situation surface as two different errors depending on
+                // whether the write or the child's exit won the race.
+                return Err(if err.kind() == std::io::ErrorKind::BrokenPipe {
+                    FitnessError::NoResponse {
+                        command: self.describe(),
+                    }
+                } else {
+                    FitnessError::Transport(err)
+                });
+            }
             // Closing stdin is what tells the endpoint no more requests are
             // coming, so it can exit after answering this one.
         }
@@ -425,12 +440,21 @@ mod tests {
     #[test]
     fn a_provider_that_closes_without_answering_is_reported_as_such() {
         // Distinct from a timeout: the child exited, it just said nothing.
+        //
+        // `true` exits immediately, so this races the request write against the
+        // child's exit — the write may succeed and the read then see EOF, or
+        // the write may hit a broken pipe. Both are the same condition, and
+        // both must produce the same error, or the diagnosis would depend on
+        // scheduling. (CI caught exactly this: it lost the race that a
+        // developer machine reliably won.)
         let provider = Cp1Subprocess::command("true", vec![]);
-        let err = provider.measure(&request()).unwrap_err();
-        assert!(
-            matches!(err, FitnessError::NoResponse { .. }),
-            "expected NoResponse, got {err:?}"
-        );
+        for attempt in 0..20 {
+            let err = provider.measure(&request()).unwrap_err();
+            assert!(
+                matches!(err, FitnessError::NoResponse { .. }),
+                "attempt {attempt}: expected NoResponse, got {err:?}"
+            );
+        }
     }
 
     #[test]
