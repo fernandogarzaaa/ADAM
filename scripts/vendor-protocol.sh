@@ -26,7 +26,11 @@ if [[ ! -d "$source_root" ]]; then
 fi
 
 # Files a binding must carry verbatim. Mirrors MANIFEST.sha256's entries.
-for relative in VERSION MANIFEST.sha256 schema/cp1.schema.json fixtures/canonical.jsonl; do
+#
+# SPEC.md is here because the manifest hashes it: the normative text is part of
+# what a binding claims to conform to, and a copy that drifted from the source
+# would let this repository cite a specification nobody else is reading.
+for relative in VERSION MANIFEST.sha256 SPEC.md schema/cp1.schema.json fixtures/canonical.jsonl; do
   mkdir -p "$root/protocol/cp1/$(dirname "$relative")"
   cp "$source_root/$relative" "$root/protocol/cp1/$relative"
   echo "vendored $relative"

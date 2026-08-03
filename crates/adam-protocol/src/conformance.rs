@@ -195,6 +195,14 @@ fn structural_problems(document: &Value) -> Vec<String> {
     problems
 }
 
+/// The basis-point members CP/1 permits to be negative.
+///
+/// Every other `_bp` member is a magnitude in `[0, 10000]`; only a delta
+/// carries a sign. Accepting `-1` for a confidence or a risk would let a
+/// fixture through that the schema rejects, which defeats the point of
+/// checking the corpus at all.
+const SIGNED_BASIS_POINT_MEMBERS: [&str; 1] = ["delta_bp"];
+
 /// Every member whose name ends in `_bp` must be an integer in range.
 ///
 /// Checked by name rather than by schema position so a new basis-point member
@@ -206,12 +214,17 @@ fn walk_basis_points(value: &Value, path: &str, problems: &mut Vec<String>) {
             for (key, child) in map {
                 let child_path = format!("{path}.{key}");
                 if key.ends_with("_bp") {
+                    let low = if SIGNED_BASIS_POINT_MEMBERS.contains(&key.as_str()) {
+                        -10_000
+                    } else {
+                        0
+                    };
                     match child.as_i64() {
                         None => problems.push(format!(
                             "{child_path} ends in `_bp` and must be an integer, found {child}"
                         )),
-                        Some(n) if !(-10_000..=10_000).contains(&n) => problems.push(format!(
-                            "{child_path} is {n}, outside the basis-point range [-10000, 10000]"
+                        Some(n) if !(low..=10_000).contains(&n) => problems.push(format!(
+                            "{child_path} is {n}, outside the basis-point range [{low}, 10000]"
                         )),
                         Some(_) => {}
                     }
@@ -232,14 +245,27 @@ fn walk_basis_points(value: &Value, path: &str, problems: &mut Vec<String>) {
 ///
 /// `manifest` is the contents of `MANIFEST.sha256`; `files` pairs each
 /// manifest-relative path with the bytes this repository actually has. Paths
-/// the caller did not supply are skipped, so a binding that vendors only the
-/// fixtures need not also carry `SPEC.md`.
+/// the caller did not supply are skipped, so a binding may verify a subset —
+/// but a skipped entry is an unverified one, so callers should supply every
+/// file they vendor.
+///
+/// A line the parser cannot read is a failure, not a skip: silently dropping it
+/// would let a corrupted manifest report success over fewer files than it names.
 pub fn check_manifest(manifest: &str, files: &[(&str, &[u8])]) -> Vec<String> {
     let mut failures = Vec::new();
     let mut matched = 0usize;
 
     for line in manifest.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        // A manifest is an integrity control. Skipping a line it cannot parse
+        // would let a corrupted manifest report success while checking fewer
+        // files than it claims to.
         let Some((expected, path)) = line.split_once("  ") else {
+            failures.push(format!(
+                "malformed manifest line (expected `<sha256>  <path>`): {line}"
+            ));
             continue;
         };
         let Some((_, bytes)) = files.iter().find(|(name, _)| *name == path) else {
@@ -304,14 +330,51 @@ mod tests {
         );
     }
 
+    fn vendored(relative: &str) -> Vec<u8> {
+        let path = format!(
+            "{}/../../protocol/cp1/{relative}",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        std::fs::read(&path)
+            .unwrap_or_else(|err| panic!("cannot read the vendored {relative} at {path}: {err}"))
+    }
+
     #[test]
-    fn the_corpus_matches_the_manifest() {
+    fn the_vendored_copy_matches_the_manifest() {
+        // Every manifest entry is supplied, not just the corpus: an entry with
+        // no matching file is skipped silently, so omitting one here would
+        // leave that file free to drift from the normative source.
         let corpus = corpus();
+        let version = vendored("VERSION");
+        let spec = vendored("SPEC.md");
+        let schema = vendored("schema/cp1.schema.json");
         let failures = check_manifest(
             &manifest(),
-            &[("fixtures/canonical.jsonl", corpus.as_bytes())],
+            &[
+                ("fixtures/canonical.jsonl", corpus.as_bytes()),
+                ("VERSION", &version),
+                ("SPEC.md", &spec),
+                ("schema/cp1.schema.json", &schema),
+            ],
         );
         assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    #[test]
+    fn a_malformed_manifest_line_is_reported_rather_than_skipped() {
+        // A manifest is an integrity control: a line it cannot parse must not
+        // be silently dropped, or a corrupted manifest reports success while
+        // checking fewer files than it names.
+        let failures = check_manifest(
+            "not-a-manifest-line\n0000  fixtures/canonical.jsonl\n",
+            &[("fixtures/canonical.jsonl", b"x")],
+        );
+        assert!(
+            failures
+                .iter()
+                .any(|f| f.contains("malformed manifest line")),
+            "{failures:#?}"
+        );
     }
 
     #[test]

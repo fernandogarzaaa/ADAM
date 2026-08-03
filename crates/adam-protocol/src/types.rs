@@ -49,9 +49,30 @@ impl Component {
 /// Conversion is the only place rounding happens, and it is explicit — which
 /// matters because ADAM's internals are `f32` throughout and EVE's are IEEE-754
 /// doubles.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(transparent)]
 pub struct BasisPoints(u16);
+
+/// Deserialization is hand-written because the derived one would accept any
+/// `u16` — including `40000`, which is outside `[0, 10000]` and which the
+/// schema rejects. A document that parses into a value the schema forbids is
+/// worse than a parse error: it flows through the organism looking valid and
+/// only fails when something else re-validates it, far from the boundary that
+/// let it in.
+impl<'de> Deserialize<'de> for BasisPoints {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = u16::deserialize(deserializer)?;
+        if raw > 10_000 {
+            return Err(serde::de::Error::custom(format!(
+                "{raw} is outside the basis-point range [0, 10000]"
+            )));
+        }
+        Ok(BasisPoints(raw))
+    }
+}
 
 impl BasisPoints {
     pub const ZERO: BasisPoints = BasisPoints(0);
@@ -645,6 +666,32 @@ mod tests {
         );
         assert_eq!(request.trials, 1);
         assert!(canonical::verify_seal(&request.seal().unwrap()).unwrap());
+    }
+
+    #[test]
+    fn a_basis_point_value_above_the_range_is_refused_at_the_boundary() {
+        // The derived impl would accept any u16. A document that parses into a
+        // value the schema forbids is worse than a parse error: it flows on
+        // looking valid and fails somewhere far from the boundary that let it
+        // in.
+        let err = serde_json::from_str::<BasisPoints>("10001").unwrap_err();
+        assert!(
+            err.to_string().contains("outside the basis-point range"),
+            "{err}"
+        );
+        assert_eq!(
+            serde_json::from_str::<BasisPoints>("10000").unwrap(),
+            BasisPoints::ONE
+        );
+        assert_eq!(
+            serde_json::from_str::<BasisPoints>("0").unwrap(),
+            BasisPoints::ZERO
+        );
+    }
+
+    #[test]
+    fn a_negative_basis_point_value_is_refused_too() {
+        assert!(serde_json::from_str::<BasisPoints>("-1").is_err());
     }
 
     #[test]
