@@ -45,10 +45,30 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
+      # A change to CP/1 lands as one pull request per repository, and until
+      # all of them merge, EVE's default branch does not yet have the half this
+      # test needs. Prefer an EVE branch of the same name when one exists, so a
+      # stacked change is verified against its own counterpart rather than
+      # against a default branch that predates it; fall back to the default
+      # branch once the counterpart has merged.
+      - name: Resolve the EVE branch to test against
+        id: eve-ref
+        run: |
+          remote=https://github.com/fernandogarzaaa/experience-validation-engine.git
+          branch="${{ github.head_ref || github.ref_name }}"
+          if [ -n "$branch" ] && git ls-remote --exit-code --heads "$remote" "$branch" >/dev/null 2>&1; then
+            echo "ref=$branch" >> "$GITHUB_OUTPUT"
+            echo "Testing against matching EVE branch: $branch"
+          else
+            echo "ref=" >> "$GITHUB_OUTPUT"
+            echo "No matching EVE branch; testing against EVE's default branch"
+          fi
+
       - name: Check out EVE
         uses: actions/checkout@v4
         with:
           repository: fernandogarzaaa/experience-validation-engine
+          ref: ${{ steps.eve-ref.outputs.ref }}
           path: eve
           persist-credentials: false
 
