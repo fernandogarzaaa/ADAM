@@ -4,9 +4,7 @@
 //! here.
 
 use adam_beliefs::{Belief, BeliefError, BeliefId, BeliefRegistry};
-use adam_eve::{
-    EvaluationResult, EvaluationThresholds, Recommendation, SimulationEvaluator, TrialFn,
-};
+use adam_eve::{EveClient, FitnessError, FitnessResult, Recommendation};
 use adam_evolution::{
     BeliefInstabilitySignal, EvolutionEngine, EvolutionProposal, EvolutionSignals,
     EvolutionThresholds, ProposalError, ProposalId, ProposalKind, ProposalStore,
@@ -15,11 +13,25 @@ use adam_evolution::{
 use adam_governance::{AuditEntry, EvolutionLimits, GovernanceError, GovernanceGate};
 use adam_kernel::{Genome, GenomeDiff, GenomeError, GenomeHistory, GenomeVersion, VersionId};
 use adam_memory::{MemoryError, MemoryId, MemoryKind, MemoryRecord, MemoryStore, Provenance};
+use adam_protocol::{Event, EventKind, EventSink, NullSink, PayloadValue, SubjectType};
 use adam_skills::{Skill, SkillRegistry};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use thiserror::Error;
 
 use crate::embedding::embed;
+
+/// Groups every event emitted while processing one developmental turn.
+///
+/// A turn is the unit that makes an event log reconstructible: given a
+/// correlation id, the whole Observe-through-Commit sequence can be replayed
+/// from the log without joining against anything else.
+pub type CorrelationId = String;
+
+/// A fresh correlation id, for a caller starting a turn of its own.
+pub fn new_correlation_id() -> CorrelationId {
+    uuid::Uuid::new_v4().to_string()
+}
 
 #[derive(Debug, Error)]
 pub enum OrganismError {
@@ -42,9 +54,16 @@ pub enum OrganismError {
     )]
     UnsupportedGenomeField(String),
     #[error(
-        "genome field '{field}' requires an EVE evaluation recommending approval before it can be accepted (found: {found})"
+        "genome field '{field}' requires a fitness measurement from EVE recommending approval before it can be accepted (found: {found})"
     )]
     EveApprovalRequired { field: String, found: String },
+    #[error(
+        "no fitness provider is configured, so genome field '{field}' cannot be validated; \
+         construct the organism with `with_eve` before accepting amendments beyond preferences.*"
+    )]
+    NoFitnessProvider { field: String },
+    #[error("fitness measurement failed: {0}")]
+    Fitness(String),
     #[error("failed to persist genome to '{path}': {source}")]
     GenomePersistence {
         path: String,
@@ -92,8 +111,16 @@ pub struct Organism {
     proposals: ProposalStore,
     engine: EvolutionEngine,
     governance: GovernanceGate,
-    eve: SimulationEvaluator,
-    evaluations: std::collections::HashMap<ProposalId, EvaluationResult>,
+    /// The link to EVE. `None` until [`Organism::with_eve`] supplies one, in
+    /// which case genome amendments beyond `preferences.*` cannot be accepted
+    /// at all — refusing is the safe failure, since the alternative is
+    /// accepting an identity change with no evidence behind it.
+    eve: Option<EveClient>,
+    /// Fitness measurements obtained for pending proposals, consumed by
+    /// [`Organism::accept_mutation`] and dropped once a proposal is decided.
+    fitness: std::collections::HashMap<ProposalId, FitnessResult>,
+    /// Where this organism announces what it does. Defaults to discarding.
+    events: std::sync::Arc<dyn EventSink>,
     genome_path: Option<String>,
 }
 
@@ -114,8 +141,9 @@ impl Organism {
             proposals: ProposalStore::new(),
             engine: EvolutionEngine::new(EvolutionThresholds::default()),
             governance: GovernanceGate::new(EvolutionLimits::default()),
-            eve: SimulationEvaluator::new(EvaluationThresholds::default(), 5),
-            evaluations: std::collections::HashMap::new(),
+            eve: None,
+            fitness: std::collections::HashMap::new(),
+            events: std::sync::Arc::new(NullSink),
             genome_path: None,
         })
     }
@@ -153,12 +181,59 @@ impl Organism {
             proposals: ProposalStore::new(),
             engine: EvolutionEngine::new(EvolutionThresholds::default()),
             governance: GovernanceGate::new(EvolutionLimits::default()),
-            eve: SimulationEvaluator::new(EvaluationThresholds::default(), 5),
-            evaluations: std::collections::HashMap::new(),
+            eve: None,
+            fitness: std::collections::HashMap::new(),
+            events: std::sync::Arc::new(NullSink),
             genome_path: Some(genome_path.to_string()),
         };
         organism.persist_genome()?;
         Ok(organism)
+    }
+
+    /// Attach the link to EVE.
+    ///
+    /// Without one, [`Organism::validate_mutation`] and any acceptance that
+    /// requires a fitness measurement fail with
+    /// [`OrganismError::NoFitnessProvider`]. That is deliberate: an organism
+    /// with no way to measure a change must refuse to make identity-level
+    /// changes, not make them unmeasured.
+    pub fn with_eve(mut self, client: EveClient) -> Self {
+        self.eve = Some(client);
+        self
+    }
+
+    /// Attach an event sink.
+    ///
+    /// Emission is fire-and-forget by design — a subsystem announcing a fact
+    /// must not be able to fail because of what a listener does with it, or
+    /// the nervous system becomes another way for the organism to break.
+    pub fn with_events(mut self, sink: std::sync::Arc<dyn EventSink>) -> Self {
+        self.events = sink;
+        self
+    }
+
+    /// Announce a fact. Never fails, and never blocks the caller's work.
+    fn emit(
+        &self,
+        kind: EventKind,
+        subject_id: impl Into<String>,
+        subject_type: SubjectType,
+        correlation_id: &str,
+        payload: &[(&str, PayloadValue)],
+    ) {
+        let payload: BTreeMap<String, PayloadValue> = payload
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), v.clone()))
+            .collect();
+        let event = Event::new(
+            kind,
+            subject_id,
+            subject_type,
+            correlation_id,
+            payload,
+            "adam:organism",
+        );
+        self.events.emit(&event);
     }
 
     fn persist_genome(&self) -> Result<(), OrganismError> {
@@ -232,6 +307,44 @@ impl Organism {
         Ok(record.id)
     }
 
+    /// Store a memory and announce it, for callers driving a developmental
+    /// turn.
+    ///
+    /// Distinct from [`Organism::memory_store`] because that method takes
+    /// `&self` — the store is internally synchronized — and a caller that
+    /// merely records a memory should not be forced to hold the correlation id
+    /// of a turn it is not part of.
+    #[allow(clippy::too_many_arguments)]
+    pub fn consolidate_memory(
+        &self,
+        kind: MemoryKind,
+        content: &str,
+        origin: &str,
+        evidence: Vec<String>,
+        confidence: f32,
+        decay_rate: f32,
+        correlation_id: &str,
+    ) -> Result<MemoryId, OrganismError> {
+        let id = self.memory_store(kind, content, origin, evidence, confidence, decay_rate)?;
+        self.emit(
+            EventKind::MemoryConsolidated,
+            id.to_string(),
+            SubjectType::Memory,
+            correlation_id,
+            &[
+                ("kind", PayloadValue::from(kind.as_str())),
+                ("origin", PayloadValue::from(origin)),
+                (
+                    "confidence_bp",
+                    PayloadValue::from(i64::from(
+                        adam_protocol::BasisPoints::from_f32(confidence).raw(),
+                    )),
+                ),
+            ],
+        );
+        Ok(id)
+    }
+
     pub fn memory_query(
         &self,
         query: &str,
@@ -288,6 +401,31 @@ impl Organism {
         self.beliefs.upsert(belief)
     }
 
+    /// Form or update a belief and announce it.
+    pub fn update_belief(&mut self, belief: Belief, correlation_id: &str) -> BeliefId {
+        let statement = belief.statement.clone();
+        let confidence = belief.confidence;
+        let active = belief.is_active();
+        let id = self.beliefs.upsert(belief);
+        self.emit(
+            EventKind::BeliefUpdated,
+            id.to_string(),
+            SubjectType::Belief,
+            correlation_id,
+            &[
+                ("statement", PayloadValue::from(statement)),
+                (
+                    "confidence_bp",
+                    PayloadValue::from(i64::from(
+                        adam_protocol::BasisPoints::from_f32(confidence).raw(),
+                    )),
+                ),
+                ("active", PayloadValue::from(active)),
+            ],
+        );
+        id
+    }
+
     // -- skills ------------------------------------------------------------
 
     pub fn skills(&self) -> &SkillRegistry {
@@ -300,6 +438,37 @@ impl Organism {
 
     pub fn register_skill(&mut self, skill: Skill) -> adam_skills::SkillId {
         self.skills.upsert(skill)
+    }
+
+    /// Register a skill and, if it has reached the promoted stage, announce
+    /// that the organism learned it.
+    ///
+    /// Only promotion is announced. A skill in an earlier stage is a
+    /// hypothesis, not a capability, and emitting `SkillLearned` for one would
+    /// make the event mean something weaker than its name.
+    pub fn learn_skill(&mut self, skill: Skill, correlation_id: &str) -> adam_skills::SkillId {
+        let name = skill.name.clone();
+        let promoted = skill.stage == adam_skills::SkillStage::Promoted;
+        let fitness = skill.fitness_score;
+        let id = self.skills.upsert(skill);
+        if promoted {
+            self.emit(
+                EventKind::SkillLearned,
+                id.to_string(),
+                SubjectType::Skill,
+                correlation_id,
+                &[
+                    ("name", PayloadValue::from(name)),
+                    (
+                        "fitness_bp",
+                        PayloadValue::from(i64::from(
+                            adam_protocol::BasisPoints::from_f32(fitness).raw(),
+                        )),
+                    ),
+                ],
+            );
+        }
+        id
     }
 
     /// Derive [`EvolutionSignals`] from the organism's own current state
@@ -401,47 +570,134 @@ impl Organism {
         self.proposals.record(proposal)
     }
 
-    /// Score a pending proposal through EVE's sandboxed simulation before
-    /// it is accepted, storing the result so [`Organism::accept_mutation`]
-    /// can consult it. The caller supplies the actual trial mechanics
-    /// (`trial_fn`, e.g. a sandbox test replay) — this crate only wires
-    /// the result into the organism's approval gate for genome amendments
-    /// beyond `preferences.*`, which are too consequential to trust on
-    /// self-reported confidence alone.
-    pub fn evaluate_mutation(
+    /// Emit a `MutationProposed` event for a recorded proposal.
+    ///
+    /// Separate from [`Organism::propose_mutation`] because a caller driving a
+    /// developmental turn owns the correlation id that groups the turn's
+    /// events, and the recording call itself does not know it.
+    pub fn announce_proposal(&self, id: ProposalId, correlation_id: &str) {
+        let Some(proposal) = self.proposals.get(id) else {
+            return;
+        };
+        self.emit(
+            EventKind::MutationProposed,
+            id.to_string(),
+            SubjectType::Mutation,
+            correlation_id,
+            &[
+                ("kind", PayloadValue::from(kind_label(&proposal.kind))),
+                ("target", PayloadValue::from(target_of(&proposal.kind))),
+                (
+                    "confidence_bp",
+                    PayloadValue::from(
+                        adam_protocol::BasisPoints::from_f32(proposal.confidence).raw() as i64,
+                    ),
+                ),
+                (
+                    "risk_bp",
+                    PayloadValue::from(adam_eve::intrinsic_risk(&proposal.kind).raw() as i64),
+                ),
+            ],
+        );
+    }
+
+    /// Measure a pending proposal in EVE, storing the result so
+    /// [`Organism::accept_mutation`] can consult it.
+    ///
+    /// This is the "validate inside EVE" step of the developmental lifecycle,
+    /// and it is the one the organism cannot perform for itself: the
+    /// measurement is produced by a separate component, over a process
+    /// boundary, and is rejected here unless EVE authored it. The organism
+    /// supplies the question — which mutation, against which genome — and
+    /// nothing else.
+    ///
+    /// Fails rather than degrading when no provider is configured. An organism
+    /// that cannot measure a change must refuse to make it, not make it blind.
+    pub fn validate_mutation(
         &mut self,
         id: ProposalId,
-        trial_fn: &TrialFn,
-    ) -> Result<EvaluationResult, OrganismError> {
+        correlation_id: &str,
+    ) -> Result<FitnessResult, OrganismError> {
         let proposal = self
             .proposals
             .get(id)
-            .ok_or(OrganismError::ProposalNotFound(id))?;
-        let result = self.eve.evaluate(proposal, trial_fn);
-        self.evaluations.insert(id, result.clone());
+            .ok_or(OrganismError::ProposalNotFound(id))?
+            .clone();
+
+        let eve = self
+            .eve
+            .as_ref()
+            .ok_or_else(|| OrganismError::NoFitnessProvider {
+                field: target_of(&proposal.kind),
+            })?;
+
+        // The genome the measurement is pinned to. `genome_after_hash` is the
+        // hash the genome *would* have if the proposal were applied, computed
+        // without applying it — so the measurement is attributable to a
+        // specific before/after pair even though nothing has changed yet.
+        let before_hash = self.history.head().genome.content_hash();
+        let after_hash = self.prospective_genome_hash(&proposal.kind);
+
+        let result = eve
+            .validate(&proposal, &before_hash, &after_hash)
+            .map_err(|err: FitnessError| OrganismError::Fitness(err.to_string()))?;
+
+        self.emit(
+            EventKind::FitnessMeasured,
+            id.to_string(),
+            SubjectType::Mutation,
+            correlation_id,
+            &[
+                (
+                    "recommendation",
+                    PayloadValue::from(format!("{:?}", result.recommendation)),
+                ),
+                (
+                    "delta_bp",
+                    PayloadValue::from(i64::from(result.delta_bp.raw())),
+                ),
+                ("runs", PayloadValue::from(result.baseline.runs)),
+                ("seed", PayloadValue::from(result.seed)),
+                ("reason", PayloadValue::from(result.reason.clone())),
+            ],
+        );
+
+        self.fitness.insert(id, result.clone());
         Ok(result)
     }
 
-    /// Like [`Organism::evaluate_mutation`], but for callers (such as the
-    /// MCP transport) that cannot pass a Rust closure and instead report
-    /// trial outcomes they already collected as plain data.
-    pub fn evaluate_mutation_from_trials(
-        &mut self,
-        id: ProposalId,
-        trials: Vec<adam_eve::TrialOutcome>,
-    ) -> Result<EvaluationResult, OrganismError> {
-        let proposal = self
-            .proposals
-            .get(id)
-            .ok_or(OrganismError::ProposalNotFound(id))?;
-        let result = adam_eve::evaluate_from_trials(
-            self.eve.thresholds(),
-            self.eve.trial_count(),
-            proposal,
-            trials,
-        );
-        self.evaluations.insert(id, result.clone());
-        Ok(result)
+    /// The hash the genome would have if `kind` were applied, without applying
+    /// it.
+    ///
+    /// Returns the current hash for proposals that change no genome field,
+    /// which is honest: for those, before and after genomes really are the
+    /// same document.
+    fn prospective_genome_hash(&self, kind: &ProposalKind) -> String {
+        let mut genome = self.history.head().genome.clone();
+        if let ProposalKind::AmendGenome {
+            field,
+            current_value,
+            suggested_value,
+        } = kind
+        {
+            if let Some(key) = field.strip_prefix("preferences.") {
+                genome
+                    .preferences
+                    .insert(key.to_string(), suggested_value.clone());
+            } else {
+                // A field this organism cannot amend yields the unchanged
+                // hash rather than an error: the acceptance path is where an
+                // unsupported field is rejected, and duplicating that
+                // judgment here would let the two disagree.
+                let _ = apply_list_amendment(&mut genome, field, current_value, suggested_value);
+            }
+        }
+        genome.content_hash()
+    }
+
+    /// The fitness measurement recorded for a proposal, if one has been taken.
+    pub fn fitness_for(&self, id: ProposalId) -> Option<&FitnessResult> {
+        self.fitness.get(&id)
     }
 
     /// Accept a pending proposal and apply its concrete effect. This is
@@ -450,7 +706,11 @@ impl Organism {
     /// limit: if the organism has already accepted too many mutations in
     /// the current window, this fails and the proposal remains `Proposed`
     /// (untouched) for later retry rather than being silently dropped.
-    pub fn accept_mutation(&mut self, id: ProposalId) -> Result<AppliedEffect, OrganismError> {
+    pub fn accept_mutation(
+        &mut self,
+        id: ProposalId,
+        correlation_id: &str,
+    ) -> Result<AppliedEffect, OrganismError> {
         self.governance.authorize_acceptance()?;
 
         let kind = {
@@ -476,13 +736,36 @@ impl Organism {
             proposal.accept()?;
         }
 
-        let effect = self.apply(id, &kind)?;
+        let effect = self.apply(id, &kind, correlation_id)?;
         self.governance.log_acceptance(id, format!("{effect:?}"));
-        // The evaluation recorded against this proposal id has served its
-        // purpose (gating this exact acceptance); keep it from
-        // accumulating forever in `evaluations`, which is otherwise never
-        // pruned as proposals cycle through evaluate -> accept/reject.
-        self.evaluations.remove(&id);
+
+        let delta_bp = self
+            .fitness
+            .get(&id)
+            .map(|f| i64::from(f.delta_bp.raw()))
+            .unwrap_or(0);
+        self.emit(
+            EventKind::MutationAccepted,
+            id.to_string(),
+            SubjectType::Mutation,
+            correlation_id,
+            &[
+                ("kind", PayloadValue::from(kind_label(&kind))),
+                ("target", PayloadValue::from(target_of(&kind))),
+                ("effect", PayloadValue::from(effect_label(&effect))),
+                ("fitness_delta_bp", PayloadValue::from(delta_bp)),
+                (
+                    "validated",
+                    PayloadValue::from(self.fitness.contains_key(&id)),
+                ),
+            ],
+        );
+
+        // The measurement recorded against this proposal has served its
+        // purpose (gating this exact acceptance); dropping it keeps `fitness`
+        // from growing without bound as proposals cycle through
+        // validate -> accept/reject.
+        self.fitness.remove(&id);
         Ok(effect)
     }
 
@@ -512,16 +795,42 @@ impl Organism {
         }
     }
 
-    pub fn reject_mutation(&mut self, id: ProposalId) -> Result<(), OrganismError> {
-        let proposal = self
-            .proposals
-            .get_mut(id)
-            .ok_or(OrganismError::ProposalNotFound(id))?;
-        proposal.reject()?;
+    /// Refuse a pending proposal.
+    ///
+    /// `reason` is recorded on the emitted event rather than inferred, because
+    /// the interesting rejections are the ones a human made for a reason no
+    /// measurement captured.
+    pub fn reject_mutation(
+        &mut self,
+        id: ProposalId,
+        reason: &str,
+        correlation_id: &str,
+    ) -> Result<(), OrganismError> {
+        let kind = {
+            let proposal = self
+                .proposals
+                .get_mut(id)
+                .ok_or(OrganismError::ProposalNotFound(id))?;
+            proposal.reject()?;
+            proposal.kind.clone()
+        };
         self.governance.log_rejection(id);
+
+        self.emit(
+            EventKind::MutationRejected,
+            id.to_string(),
+            SubjectType::Mutation,
+            correlation_id,
+            &[
+                ("kind", PayloadValue::from(kind_label(&kind))),
+                ("target", PayloadValue::from(target_of(&kind))),
+                ("reason", PayloadValue::from(reason)),
+            ],
+        );
+
         // See the matching cleanup in `accept_mutation`: a rejected
-        // proposal's evaluation has no further use.
-        self.evaluations.remove(&id);
+        // proposal's measurement has no further use.
+        self.fitness.remove(&id);
         Ok(())
     }
 
@@ -529,6 +838,7 @@ impl Organism {
         &mut self,
         id: ProposalId,
         kind: &ProposalKind,
+        correlation_id: &str,
     ) -> Result<AppliedEffect, OrganismError> {
         match kind {
             ProposalKind::RetireSkill { skill_name } => {
@@ -572,11 +882,23 @@ impl Organism {
                     });
                 }
 
-                let new_version = self
-                    .history
-                    .commit(genome, format!("accepted mutation: amend {field}"));
+                let reason = format!("accepted mutation: amend {field}");
+                let new_version = self.history.commit(genome, reason.clone());
                 self.persist_genome()?;
                 let label = self.history.get(new_version)?.label.clone();
+
+                self.emit(
+                    EventKind::GenomeCommitted,
+                    new_version.to_string(),
+                    SubjectType::Genome,
+                    correlation_id,
+                    &[
+                        ("version_label", PayloadValue::from(label.clone())),
+                        ("reason", PayloadValue::from(reason)),
+                        ("mutation_id", PayloadValue::from(id.to_string())),
+                    ],
+                );
+
                 Ok(AppliedEffect::GenomeAmended { new_version, label })
             }
             ProposalKind::ReconcileBelief { statement } => Ok(AppliedEffect::AdvisoryOnly {
@@ -592,26 +914,85 @@ impl Organism {
         }
     }
 
-    /// Genome fields beyond `preferences.*` (values/goals/capabilities/
-    /// policies) touch core identity and are irreversible in the sense
-    /// that rollback is a forward-only new commit, not a silent undo — so
-    /// they require a prior EVE evaluation on this exact proposal that
-    /// recommended `Approve` before they can be accepted.
+    /// The acceptance gate for identity-level change.
+    ///
+    /// Genome fields beyond `preferences.*` (values, goals, capabilities,
+    /// policies) touch what the organism *is*, and are only reversible by a
+    /// forward commit rather than a silent undo. Accepting one requires a
+    /// fitness measurement on this exact proposal that recommends approval.
+    ///
+    /// The measurement must additionally be authentic — authored by EVE, about
+    /// this mutation, with baseline and candidate compared over the same number
+    /// of runs. `EveClient` already refuses anything else, so a measurement in
+    /// `self.fitness` has passed that check; re-asserting it here is defence in
+    /// depth against a future path that populates the map some other way, and
+    /// costs one comparison.
     fn require_eve_approval(&self, id: ProposalId, field: &str) -> Result<(), OrganismError> {
-        match self.evaluations.get(&id) {
-            Some(result) if result.recommendation == Recommendation::Approve => Ok(()),
-            Some(result) => Err(OrganismError::EveApprovalRequired {
+        let Some(result) = self.fitness.get(&id) else {
+            return Err(if self.eve.is_none() {
+                OrganismError::NoFitnessProvider {
+                    field: field.to_string(),
+                }
+            } else {
+                OrganismError::EveApprovalRequired {
+                    field: field.to_string(),
+                    found: "no measurement recorded; call validate_mutation first".to_string(),
+                }
+            });
+        };
+
+        if let Some(detail) = result.authenticity_failure(&id.to_string()) {
+            return Err(OrganismError::EveApprovalRequired {
                 field: field.to_string(),
-                found: format!("{:?}", result.recommendation),
-            }),
-            None => Err(OrganismError::EveApprovalRequired {
+                found: detail,
+            });
+        }
+
+        if result.recommendation == Recommendation::Approve {
+            Ok(())
+        } else {
+            Err(OrganismError::EveApprovalRequired {
                 field: field.to_string(),
-                found: "no evaluation recorded".to_string(),
-            }),
+                found: format!("{:?} — {}", result.recommendation, result.reason),
+            })
         }
     }
 
     // -- reflection ----------------------------------------------------
+
+    /// Produce a self-assessment and announce it.
+    ///
+    /// The announcing variant of [`Organism::reflect`], for callers driving a
+    /// developmental turn.
+    pub fn reflect_and_announce(
+        &self,
+        correlation_id: &str,
+    ) -> Result<ReflectionSummary, OrganismError> {
+        let summary = self.reflect()?;
+        self.emit(
+            EventKind::ReflectionCompleted,
+            summary.genome_version_id.to_string(),
+            SubjectType::Reflection,
+            correlation_id,
+            &[
+                (
+                    "genome_version",
+                    PayloadValue::from(summary.genome_version.clone()),
+                ),
+                ("total_memories", PayloadValue::from(summary.total_memories)),
+                ("active_beliefs", PayloadValue::from(summary.active_beliefs)),
+                (
+                    "promoted_skills",
+                    PayloadValue::from(summary.promoted_skills),
+                ),
+                (
+                    "pending_proposals",
+                    PayloadValue::from(summary.pending_proposals),
+                ),
+            ],
+        );
+        Ok(summary)
+    }
 
     pub fn reflect(&self) -> Result<ReflectionSummary, OrganismError> {
         let head = self.history.head();
@@ -631,6 +1012,39 @@ impl Organism {
             pending_proposals: self.proposals.pending().len(),
             accepted_proposals: self.proposals.accepted().len(),
         })
+    }
+}
+
+/// Stable, machine-readable label for a proposal kind, used in event payloads.
+///
+/// Matches the CP/1 `MutationKind` vocabulary rather than Rust's variant
+/// spelling, so an event log reads the same as the documents it accompanies.
+fn kind_label(kind: &ProposalKind) -> &'static str {
+    match kind {
+        ProposalKind::RetireSkill { .. } => "retire_skill",
+        ProposalKind::ReconcileBelief { .. } => "reconcile_belief",
+        ProposalKind::InvestigateConflict { .. } => "investigate_conflict",
+        ProposalKind::AmendGenome { .. } => "amend_genome",
+    }
+}
+
+/// What a proposal acts on: a genome field path, a skill name, a belief
+/// statement, or a conflict topic.
+fn target_of(kind: &ProposalKind) -> String {
+    match kind {
+        ProposalKind::RetireSkill { skill_name } => skill_name.clone(),
+        ProposalKind::ReconcileBelief { statement } => statement.clone(),
+        ProposalKind::InvestigateConflict { topic } => topic.clone(),
+        ProposalKind::AmendGenome { field, .. } => field.clone(),
+    }
+}
+
+/// Stable label for an applied effect, for event payloads.
+fn effect_label(effect: &AppliedEffect) -> &'static str {
+    match effect {
+        AppliedEffect::SkillRetired { .. } => "skill_retired",
+        AppliedEffect::GenomeAmended { .. } => "genome_amended",
+        AppliedEffect::AdvisoryOnly { .. } => "advisory_only",
     }
 }
 

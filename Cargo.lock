@@ -18,9 +18,10 @@ name = "adam-eve"
 version = "0.1.0"
 dependencies = [
  "adam-evolution",
- "chrono",
+ "adam-protocol",
  "serde",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]
@@ -63,7 +64,6 @@ name = "adam-mcp"
 version = "0.1.0"
 dependencies = [
  "adam-beliefs",
- "adam-eve",
  "adam-evolution",
  "adam-kernel",
  "adam-memory",
@@ -99,11 +99,22 @@ dependencies = [
  "adam-governance",
  "adam-kernel",
  "adam-memory",
+ "adam-protocol",
  "adam-skills",
  "chrono",
  "serde",
  "serde_json",
  "thiserror",
+ "uuid",
+]
+
+[[package]]
+name = "adam-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
  "uuid",
 ]
 

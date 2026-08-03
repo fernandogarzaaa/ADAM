@@ -13,6 +13,7 @@ adam-skills = { path = "../adam-skills" }
 adam-beliefs = { path = "../adam-beliefs" }
 adam-evolution = { path = "../adam-evolution" }
 adam-eve = { path = "../adam-eve" }
+adam-protocol = { path = "../adam-protocol" }
 adam-governance = { path = "../adam-governance" }
 serde = { workspace = true }
 serde_json = { workspace = true }
