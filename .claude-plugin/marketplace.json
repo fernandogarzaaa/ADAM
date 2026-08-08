@@ -1,0 +1,20 @@
+{
+  "name": "adam",
+  "owner": {
+    "name": "fernandogarzaaa",
+    "url": "https://github.com/fernandogarzaaa"
+  },
+  "metadata": {
+    "description": "ADAM — a self-evolving digital organism with memory, beliefs, skills, and governed self-mutation.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "adam",
+      "source": "./",
+      "description": "Adds the ADAM MCP tools: inspect the organism's genome and identity, store and query durable memory, read and update beliefs, run registered skills, propose/accept/reject governed mutations to its own genome, and review evolution history and reflections. Requires a one-time `cargo build --release` in the plugin directory (see repository README).",
+      "category": "productivity",
+      "keywords": ["agent", "memory", "beliefs", "self-evolution", "mcp"]
+    }
+  ]
+}

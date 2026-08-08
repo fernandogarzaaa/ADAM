@@ -1,0 +1,26 @@
+{
+  "name": "adam",
+  "version": "0.1.0",
+  "description": "ADAM — a self-evolving digital organism. Adds 12 MCP tools for genome identity, durable memory store/query, belief tracking, skill execution, guarded self-mutation (propose/accept/reject), evolution history, and reflection.",
+  "author": {
+    "name": "fernandogarzaaa",
+    "url": "https://github.com/fernandogarzaaa"
+  },
+  "homepage": "https://github.com/fernandogarzaaa/ADAM",
+  "repository": "https://github.com/fernandogarzaaa/ADAM",
+  "license": "MIT",
+  "keywords": [
+    "agent",
+    "memory",
+    "beliefs",
+    "self-evolution",
+    "governance",
+    "mcp"
+  ],
+  "mcpServers": {
+    "adam": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/target/release/adam-mcp",
+      "args": []
+    }
+  }
+}
