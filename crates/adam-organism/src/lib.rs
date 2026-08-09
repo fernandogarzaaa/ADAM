@@ -1,11 +1,37 @@
 //! ADAM Organism: the composition root wiring genome, memory, skills,
-//! beliefs, and the evolution engine into one stateful unit.
+//! beliefs, and the evolution engine into one stateful unit — and the
+//! developmental lifecycle that makes them a metabolism rather than a
+//! collection of organs.
+//!
+//! [`Organism`] is the state and the operations on it: store a memory, form a
+//! belief, propose a mutation, measure it in EVE, accept or refuse it, commit a
+//! genome version. Every operation that changes the organism announces itself
+//! as a CP/1 event.
+//!
+//! [`LifecycleDriver`] executes the sequence those operations compose into:
+//!
+//! ```text
+//! Observe → Experience → Reflect → Consolidate memory → Update beliefs
+//!   → Generate mutations → Validate inside EVE → Measure fitness
+//!   → Commit genome → continue operating
+//! ```
+//!
+//! The two are separate because they answer different questions. `Organism`
+//! answers "what may the organism do, and under what constraints"; the driver
+//! answers "in what order, and how often". A deployment that wants a different
+//! cadence — batching turns, running the loop on a schedule, driving it from an
+//! MCP client — replaces the driver and keeps every guarantee the organism
+//! enforces.
 
 mod embedding;
+mod lifecycle;
 mod organism;
 
 pub use embedding::embed;
-pub use organism::{AppliedEffect, Organism, OrganismError, ReflectionSummary};
+pub use lifecycle::{LifecycleConfig, LifecycleDriver, MutationOutcome, Observation, TurnReport};
+pub use organism::{
+    new_correlation_id, AppliedEffect, CorrelationId, Organism, OrganismError, ReflectionSummary,
+};
 
 #[cfg(test)]
 mod tests {
@@ -114,7 +140,7 @@ mod tests {
             ..Default::default()
         };
         let ids = organism.evolve(&signals);
-        let effect = organism.accept_mutation(ids[0]).unwrap();
+        let effect = organism.accept_mutation(ids[0], "turn").unwrap();
 
         assert!(matches!(effect, AppliedEffect::SkillRetired { .. }));
         assert!(organism.skills().is_empty());
@@ -136,7 +162,7 @@ mod tests {
             0.9,
         );
         let id = organism.propose_mutation(proposal);
-        let effect = organism.accept_mutation(id).unwrap();
+        let effect = organism.accept_mutation(id, "turn").unwrap();
 
         match effect {
             AppliedEffect::GenomeAmended { new_version, .. } => {
@@ -167,7 +193,7 @@ mod tests {
             0.9,
         );
         let id = organism.propose_mutation(proposal);
-        organism.accept_mutation(id).unwrap();
+        organism.accept_mutation(id, "turn").unwrap();
         assert_eq!(
             organism.genome().preferences.get("tone"),
             Some(&"concise".to_string())
@@ -225,7 +251,7 @@ mod tests {
             0.9,
         );
         let accept_id = organism.propose_mutation(accept_proposal);
-        organism.accept_mutation(accept_id).unwrap();
+        organism.accept_mutation(accept_id, "turn").unwrap();
 
         let reject_proposal = adam_evolution::EvolutionProposal::new(
             adam_evolution::ProposalKind::InvestigateConflict {
@@ -236,7 +262,9 @@ mod tests {
             0.5,
         );
         let reject_id = organism.propose_mutation(reject_proposal);
-        organism.reject_mutation(reject_id).unwrap();
+        organism
+            .reject_mutation(reject_id, "not needed", "turn")
+            .unwrap();
 
         organism.rollback(v1, "regression").unwrap();
 
@@ -264,7 +292,7 @@ mod tests {
                 0.9,
             );
             let id = organism.propose_mutation(proposal);
-            organism.accept_mutation(id).unwrap();
+            organism.accept_mutation(id, "turn").unwrap();
             last_id = Some(id);
         }
         let _ = last_id;
@@ -281,7 +309,7 @@ mod tests {
             0.9,
         ));
 
-        let err = organism.accept_mutation(sixth).unwrap_err();
+        let err = organism.accept_mutation(sixth, "turn").unwrap_err();
         assert!(matches!(err, OrganismError::Governance(_)));
         // The proposal is untouched — still pending, not silently dropped.
         assert_eq!(
@@ -312,7 +340,7 @@ mod tests {
                 0.9,
             );
             let id = organism.propose_mutation(proposal);
-            organism.accept_mutation(id).unwrap();
+            organism.accept_mutation(id, "turn").unwrap();
             v1
         };
         // Organism dropped here — simulates a process restart.
@@ -399,149 +427,167 @@ mod tests {
         assert!(!ids.is_empty());
     }
 
-    #[test]
-    fn amending_values_beyond_preferences_requires_a_prior_eve_approval() {
-        let mut organism = new_organism();
-        let proposal = adam_evolution::EvolutionProposal::new(
+    /// A stubbed EVE that returns `recommendation` for whichever proposal it
+    /// is asked about, with a symmetric comparison so the authenticity check
+    /// passes and the test exercises the recommendation itself.
+    fn stub_eve(
+        proposal_id: adam_evolution::ProposalId,
+        recommendation: adam_protocol::Recommendation,
+        author: adam_protocol::Component,
+    ) -> adam_eve::EveClient {
+        use adam_protocol::{BasisPoints, Measurement, Provenance, SignedBasisPoints};
+        let measurement = |composite: f64| Measurement {
+            composite_bp: BasisPoints::from_ratio(composite),
+            task_success_bp: BasisPoints::from_ratio(composite),
+            frustration_bp: BasisPoints::from_ratio(0.3),
+            trust_bp: BasisPoints::from_ratio(0.6),
+            cognitive_load_bp: BasisPoints::from_ratio(0.4),
+            runs: 9,
+        };
+        let result = adam_eve::FitnessResult {
+            cp: "cp1".to_string(),
+            doc_type: "FitnessResult".to_string(),
+            id: uuid::Uuid::new_v4().to_string(),
+            mutation_id: proposal_id.to_string(),
+            seed: 1337,
+            scenario_ids: vec!["excellent".to_string()],
+            trials: 3,
+            baseline: measurement(0.64),
+            candidate: measurement(0.71),
+            delta_bp: SignedBasisPoints::new(700),
+            recommendation,
+            reason: "stubbed measurement".to_string(),
+            provenance: Provenance::now(author, "eve:cp1/validate"),
+        };
+        adam_eve::EveClient::new(Box::new(adam_eve::StubProvider::returning(result)))
+    }
+
+    fn amend_proposal(field: &str, value: &str) -> adam_evolution::EvolutionProposal {
+        adam_evolution::EvolutionProposal::new(
             adam_evolution::ProposalKind::AmendGenome {
-                field: "values.append".to_string(),
+                field: field.to_string(),
                 current_value: String::new(),
-                suggested_value: "curiosity".to_string(),
+                suggested_value: value.to_string(),
             },
-            "observed a pattern favoring curiosity",
+            "observed a pattern",
             vec![],
             0.9,
-        );
-        let id = organism.propose_mutation(proposal);
+        )
+    }
 
-        // No EVE evaluation recorded yet — accept must fail closed.
-        let err = organism.accept_mutation(id).unwrap_err();
-        assert!(matches!(err, OrganismError::EveApprovalRequired { .. }));
+    #[test]
+    fn amending_a_genome_list_field_without_a_measurement_fails_closed() {
+        let mut organism = new_organism();
+        let id = organism.propose_mutation(amend_proposal("values.append", "curiosity"));
+
+        // No measurement taken, and no provider configured: accepting an
+        // identity-level change with nothing behind it must be impossible.
+        let err = organism.accept_mutation(id, "turn").unwrap_err();
+        assert!(matches!(err, OrganismError::NoFitnessProvider { .. }));
         assert!(organism.genome().values.is_empty());
     }
 
     #[test]
-    fn eve_approval_unlocks_appending_to_a_genome_list_field() {
-        let mut organism = new_organism();
-        let proposal = adam_evolution::EvolutionProposal::new(
-            adam_evolution::ProposalKind::AmendGenome {
-                field: "values.append".to_string(),
-                current_value: String::new(),
-                suggested_value: "curiosity".to_string(),
-            },
-            "observed a pattern favoring curiosity",
-            vec![],
-            // Confidence 1.0 keeps AmendGenome's baseline risk (0.6) at
-            // exactly the default max_acceptable_risk threshold rather
-            // than over it, so a clean trial run can still reach Approve
-            // instead of being forced into NeedsReview by risk alone.
-            1.0,
-        );
+    fn a_configured_provider_still_requires_the_measurement_to_be_taken() {
+        let proposal = amend_proposal("values.append", "curiosity");
+        let proposal_id = proposal.id;
+        let mut organism = new_organism().with_eve(stub_eve(
+            proposal_id,
+            adam_protocol::Recommendation::Approve,
+            adam_protocol::Component::Eve,
+        ));
         let id = organism.propose_mutation(proposal);
 
-        let trials = vec![
-            adam_eve::TrialOutcome {
-                succeeded: true,
-                detail: "sandbox replay ok".to_string(),
-            };
-            5
-        ];
-        let evaluation = organism.evaluate_mutation_from_trials(id, trials).unwrap();
-        assert_eq!(evaluation.recommendation, adam_eve::Recommendation::Approve);
+        // A reachable EVE is not an approving EVE. Until validate_mutation
+        // actually runs, there is no evidence.
+        let err = organism.accept_mutation(id, "turn").unwrap_err();
+        assert!(matches!(err, OrganismError::EveApprovalRequired { .. }));
+        assert!(err.to_string().contains("validate_mutation first"));
+        assert!(organism.genome().values.is_empty());
+    }
 
-        let effect = organism.accept_mutation(id).unwrap();
+    #[test]
+    fn an_approving_measurement_unlocks_a_genome_list_amendment() {
+        let proposal = amend_proposal("values.append", "curiosity");
+        let proposal_id = proposal.id;
+        let mut organism = new_organism().with_eve(stub_eve(
+            proposal_id,
+            adam_protocol::Recommendation::Approve,
+            adam_protocol::Component::Eve,
+        ));
+        let id = organism.propose_mutation(proposal);
+
+        let fitness = organism.validate_mutation(id, "turn").unwrap();
+        assert_eq!(
+            fitness.recommendation,
+            adam_protocol::Recommendation::Approve
+        );
+
+        let effect = organism.accept_mutation(id, "turn").unwrap();
         assert!(matches!(effect, AppliedEffect::GenomeAmended { .. }));
         assert_eq!(organism.genome().values, vec!["curiosity".to_string()]);
     }
 
     #[test]
-    fn eve_needs_review_recommendation_still_blocks_acceptance() {
-        let mut organism = new_organism();
-        let proposal = adam_evolution::EvolutionProposal::new(
-            adam_evolution::ProposalKind::AmendGenome {
-                field: "goals.append".to_string(),
-                current_value: String::new(),
-                suggested_value: "ship faster".to_string(),
-            },
-            "mixed evidence",
-            vec![],
-            0.9,
-        );
+    fn a_needs_review_measurement_still_blocks_acceptance() {
+        let proposal = amend_proposal("goals.append", "ship faster");
+        let proposal_id = proposal.id;
+        let mut organism = new_organism().with_eve(stub_eve(
+            proposal_id,
+            adam_protocol::Recommendation::NeedsReview,
+            adam_protocol::Component::Eve,
+        ));
         let id = organism.propose_mutation(proposal);
 
-        // 3 of 5 trials succeed -> fitness 0.6, in the NeedsReview band
-        // (below the 0.75 approve floor, above the 0.3 reject ceiling).
-        // 5 trials matches the organism's default evaluator trial count,
-        // so this exercises the fitness-band path rather than the
-        // insufficient-evidence path (see the test below).
-        let trials = vec![
-            adam_eve::TrialOutcome {
-                succeeded: true,
-                detail: "ok".to_string(),
-            },
-            adam_eve::TrialOutcome {
-                succeeded: true,
-                detail: "ok".to_string(),
-            },
-            adam_eve::TrialOutcome {
-                succeeded: true,
-                detail: "ok".to_string(),
-            },
-            adam_eve::TrialOutcome {
-                succeeded: false,
-                detail: "regressed".to_string(),
-            },
-            adam_eve::TrialOutcome {
-                succeeded: false,
-                detail: "regressed".to_string(),
-            },
-        ];
-        organism.evaluate_mutation_from_trials(id, trials).unwrap();
-
-        let err = organism.accept_mutation(id).unwrap_err();
+        organism.validate_mutation(id, "turn").unwrap();
+        let err = organism.accept_mutation(id, "turn").unwrap_err();
         assert!(matches!(err, OrganismError::EveApprovalRequired { .. }));
         assert!(organism.genome().goals.is_empty());
     }
 
     #[test]
-    fn reporting_fewer_trials_than_the_evaluator_requires_cannot_force_an_approval() {
-        // A client reporting one successful trial gets fitness 1.0 by the
-        // raw pass-rate formula, but that isn't real evidence of a 5-run
-        // sandbox replay — it must not be enough to unlock a genome
-        // amendment. This is the negative case for the EVE approval gate:
-        // self-reported trial counts below the evaluator's configured
-        // minimum are treated as insufficient evidence, not a shortcut.
-        let mut organism = new_organism();
-        let proposal = adam_evolution::EvolutionProposal::new(
-            adam_evolution::ProposalKind::AmendGenome {
-                field: "values.append".to_string(),
-                current_value: String::new(),
-                suggested_value: "curiosity".to_string(),
-            },
-            "single anecdotal success",
-            vec![],
-            1.0,
-        );
+    fn a_measurement_adam_authored_can_never_unlock_an_amendment() {
+        // The failure this whole design exists to remove: the organism
+        // producing its own evidence. `EveClient` refuses it at the boundary,
+        // so validation itself fails and nothing reaches the gate.
+        let proposal = amend_proposal("values.append", "curiosity");
+        let proposal_id = proposal.id;
+        let mut organism = new_organism().with_eve(stub_eve(
+            proposal_id,
+            adam_protocol::Recommendation::Approve,
+            adam_protocol::Component::Adam,
+        ));
         let id = organism.propose_mutation(proposal);
 
-        let trials = vec![adam_eve::TrialOutcome {
-            succeeded: true,
-            detail: "sandbox replay ok".to_string(),
-        }];
-        let evaluation = organism.evaluate_mutation_from_trials(id, trials).unwrap();
-        assert_eq!(evaluation.fitness, 1.0);
-        assert_eq!(
-            evaluation.recommendation,
-            adam_eve::Recommendation::NeedsReview
-        );
+        let err = organism.validate_mutation(id, "turn").unwrap_err();
+        assert!(matches!(err, OrganismError::Fitness(_)));
+        assert!(err.to_string().contains("only EVE may author"));
 
-        let err = organism.accept_mutation(id).unwrap_err();
+        let err = organism.accept_mutation(id, "turn").unwrap_err();
         assert!(matches!(err, OrganismError::EveApprovalRequired { .. }));
         assert!(organism.genome().values.is_empty());
     }
 
     #[test]
-    fn preferences_amendments_remain_ungated_by_eve() {
+    fn a_validation_request_pins_the_genome_the_measurement_applies_to() {
+        let proposal = amend_proposal("values.append", "curiosity");
+        let proposal_id = proposal.id;
+        let organism = new_organism().with_eve(stub_eve(
+            proposal_id,
+            adam_protocol::Recommendation::Approve,
+            adam_protocol::Component::Eve,
+        ));
+
+        // The prospective hash must differ from the current one, or the
+        // measurement could not be attributed to a specific change.
+        let before = organism.genome().content_hash();
+        let mut after_genome = organism.genome().clone();
+        after_genome.values.push("curiosity".to_string());
+        assert_ne!(before, after_genome.content_hash());
+    }
+
+    #[test]
+    fn preferences_amendments_remain_ungated() {
         let mut organism = new_organism();
         let proposal = adam_evolution::EvolutionProposal::new(
             adam_evolution::ProposalKind::AmendGenome {
@@ -555,8 +601,9 @@ mod tests {
         );
         let id = organism.propose_mutation(proposal);
 
-        // No EVE evaluation recorded, yet preferences.* still succeeds.
-        let effect = organism.accept_mutation(id).unwrap();
+        // Low-stakes and reversible, so no measurement is required — and no
+        // provider is configured here, proving the path is genuinely ungated.
+        let effect = organism.accept_mutation(id, "turn").unwrap();
         assert!(matches!(effect, AppliedEffect::GenomeAmended { .. }));
     }
 

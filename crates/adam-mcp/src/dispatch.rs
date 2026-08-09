@@ -227,7 +227,10 @@ fn propose_mutation(organism: &mut Organism, args: &Value) -> Result<Value, Stri
     let action = opt_str(args, "action").unwrap_or_else(|| "create".to_string());
     match action.as_str() {
         "create" => propose_mutation_create(organism, args),
-        "evaluate" => propose_mutation_evaluate(organism, args),
+        // "evaluate" remains accepted as an alias so an existing client keeps
+        // working; it now performs a real measurement rather than scoring
+        // caller-supplied trial outcomes.
+        "validate" | "evaluate" => validate_mutation(organism, args),
         other => Err(format!("unknown propose_mutation action '{other}'")),
     }
 }
@@ -261,36 +264,43 @@ fn propose_mutation_create(organism: &mut Organism, args: &Value) -> Result<Valu
     Ok(json!({ "id": id }))
 }
 
-/// EVE evaluation via reported trial outcomes: `adam-eve`'s `TrialFn`
-/// mechanism assumes an in-process sandbox, which an MCP client can't
-/// supply over JSON-RPC — instead the client runs its own trials (unit
-/// tests, a staging replay, etc.) and reports the outcomes as data.
-fn propose_mutation_evaluate(organism: &mut Organism, args: &Value) -> Result<Value, String> {
+/// Measure a pending proposal in EVE.
+///
+/// The previous implementation took trial outcomes *from the caller* and
+/// scored them, which meant an MCP client could hand ADAM whatever evidence
+/// suited it and have the organism treat it as a sandboxed measurement. That
+/// is now impossible: measurement happens in EVE, over a process boundary, and
+/// ADAM refuses any result EVE did not author. The client chooses when to
+/// validate; it does not supply the verdict.
+fn validate_mutation(organism: &mut Organism, args: &Value) -> Result<Value, String> {
     let id = parse_uuid(args, "proposal_id")?;
-    let trials: Vec<adam_eve::TrialOutcome> = args
-        .get("trials")
-        .cloned()
-        .map(serde_json::from_value)
-        .transpose()
-        .map_err(|e| format!("invalid trials: {e}"))?
-        .unwrap_or_default();
-
+    let correlation_id =
+        opt_str(args, "correlation_id").unwrap_or_else(adam_organism::new_correlation_id);
     let result = organism
-        .evaluate_mutation_from_trials(id, trials)
+        .validate_mutation(id, &correlation_id)
         .map_err(|e| e.to_string())?;
-    Ok(json!(result))
+    Ok(json!({ "correlation_id": correlation_id, "fitness": result }))
 }
 
 fn accept_mutation(organism: &mut Organism, args: &Value) -> Result<Value, String> {
     let id = parse_uuid(args, "proposal_id")?;
-    let effect = organism.accept_mutation(id).map_err(|e| e.to_string())?;
-    Ok(json!(effect))
+    let correlation_id =
+        opt_str(args, "correlation_id").unwrap_or_else(adam_organism::new_correlation_id);
+    let effect = organism
+        .accept_mutation(id, &correlation_id)
+        .map_err(|e| e.to_string())?;
+    Ok(json!({ "correlation_id": correlation_id, "effect": effect }))
 }
 
 fn reject_mutation(organism: &mut Organism, args: &Value) -> Result<Value, String> {
     let id = parse_uuid(args, "proposal_id")?;
-    organism.reject_mutation(id).map_err(|e| e.to_string())?;
-    Ok(json!({ "rejected": id }))
+    let correlation_id =
+        opt_str(args, "correlation_id").unwrap_or_else(adam_organism::new_correlation_id);
+    let reason = opt_str(args, "reason").unwrap_or_else(|| "no reason supplied".to_string());
+    organism
+        .reject_mutation(id, &reason, &correlation_id)
+        .map_err(|e| e.to_string())?;
+    Ok(json!({ "rejected": id, "correlation_id": correlation_id, "reason": reason }))
 }
 
 fn history(organism: &mut Organism, args: &Value) -> Result<Value, String> {

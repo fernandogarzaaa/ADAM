@@ -1,5 +1,6 @@
 [package]
 name = "adam-eve"
+description = "ADAM's CP/1 client for EVE — counterfactual fitness measurement of evolution proposals"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 adam-evolution = { path = "../adam-evolution" }
+adam-protocol = { path = "../adam-protocol" }
 serde = { workspace = true }
 serde_json = { workspace = true }
-chrono = { workspace = true }
+uuid = { workspace = true }

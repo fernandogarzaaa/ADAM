@@ -1,0 +1,19 @@
+[package]
+name = "adam-protocol"
+description = "CP/1 (Cognitive Protocol v1) binding: the wire contract shared with EVE and AXIOM-AETHER"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+# Deliberately dependency-light: this crate is a vendored copy of a contract
+# owned elsewhere, and a future consumer must be able to lift it without
+# inheriting ADAM's dependency graph. Notably absent is `chrono`, which the rest
+# of the workspace uses — CP/1 needs one fixed timestamp format, and that is
+# thirty lines (see types::Timestamp).
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+uuid = { workspace = true }

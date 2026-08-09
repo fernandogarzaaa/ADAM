@@ -34,7 +34,8 @@ crates/
 ├── adam-skills      Phase 3 — skill lifecycle (discover → … → evolve)
 ├── adam-beliefs     Phase 4 — epistemic state with evidence-driven confidence
 ├── adam-evolution   Phase 5 — signals → EvolutionProposals (never auto-applied)
-├── adam-eve         Phase 6 — sandboxed simulation scoring for proposals
+├── adam-protocol    CP/1 binding — the wire contract shared with EVE and AXIOM
+├── adam-eve         CP/1 client for EVE — counterfactual fitness measurement
 ├── adam-organism    Phase 7 — composition root wiring every subsystem together
 ├── adam-mcp         Phase 7 — JSON-RPC 2.0 stdio MCP server (the adam_* tools)
 └── adam-governance  Phase 8 — rate limiting + immutable audit log

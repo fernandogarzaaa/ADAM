@@ -29,3 +29,71 @@ jobs:
         run: cargo audit
       - name: Build release
         run: cargo build --workspace --release
+
+  # ADAM and EVE are one organism connected by CP/1, but neither repository
+  # depends on the other at build time — that edge is exactly what the protocol
+  # exists to avoid. Nothing in the `test` job above can therefore prove the two
+  # halves actually fit. This job checks out EVE, builds it, and runs ADAM's
+  # integration test against the real endpoint: real canonical encoding, real
+  # sealing, real envelope verification, across a language boundary in both
+  # directions.
+  eve-integration:
+    name: Cross-repository (ADAM ↔ EVE over CP/1)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # A change to CP/1 lands as one pull request per repository, and until
+      # all of them merge, EVE's default branch does not yet have the half this
+      # test needs. Prefer an EVE branch of the same name when one exists, so a
+      # stacked change is verified against its own counterpart rather than
+      # against a default branch that predates it; fall back to the default
+      # branch once the counterpart has merged.
+      - name: Resolve the EVE branch to test against
+        id: eve-ref
+        run: |
+          remote=https://github.com/fernandogarzaaa/experience-validation-engine.git
+          branch="${{ github.head_ref || github.ref_name }}"
+          if [ -n "$branch" ] && git ls-remote --exit-code --heads "$remote" "$branch" >/dev/null 2>&1; then
+            echo "ref=$branch" >> "$GITHUB_OUTPUT"
+            echo "Testing against matching EVE branch: $branch"
+          else
+            echo "ref=" >> "$GITHUB_OUTPUT"
+            echo "No matching EVE branch; testing against EVE's default branch"
+          fi
+
+      - name: Check out EVE
+        uses: actions/checkout@v4
+        with:
+          repository: fernandogarzaaa/experience-validation-engine
+          ref: ${{ steps.eve-ref.outputs.ref }}
+          path: eve
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: eve/package-lock.json
+
+      - name: Build EVE
+        working-directory: eve
+        run: |
+          npm ci
+          npm run build
+
+      # Verifies ADAM's vendored CP/1 corpus is byte-identical to EVE's. A
+      # mismatch means one repository re-vendored from the normative source and
+      # the other did not, which would let the two bindings drift apart while
+      # each one's own conformance suite still passed.
+      - name: Verify both repositories vendor the same CP/1 corpus
+        run: |
+          diff -u protocol/cp1/MANIFEST.sha256 eve/protocol/cp1/MANIFEST.sha256
+          diff -u protocol/cp1/fixtures/canonical.jsonl eve/protocol/cp1/fixtures/canonical.jsonl
+
+      - name: Measure a real mutation through the real EVE
+        env:
+          ADAM_EVE_CP1: ${{ github.workspace }}/eve/bin/eve-cp1.js
+        run: cargo test -p adam-eve --test eve_integration -- --nocapture

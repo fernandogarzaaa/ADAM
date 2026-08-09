@@ -92,11 +92,11 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "adam_propose_mutation",
-            "description": "action=\"create\" (default): manually record an evolution proposal (retire_skill, reconcile_belief, investigate_conflict, or amend_genome). action=\"evaluate\": score a pending proposal through EVE using caller-reported trial outcomes (e.g. from a sandbox test run) — required before amend_genome proposals touching values/goals/capabilities/policies can be accepted; preferences.* amendments do not require this.",
+            "description": "action=\"create\" (default): manually record an evolution proposal (retire_skill, reconcile_belief, investigate_conflict, or amend_genome). action=\"validate\": measure a pending proposal in EVE, which runs its scenario suite twice at the same seed — once as the organism is, once with the mutation applied — and returns a counterfactual fitness result. Validation is required before amend_genome proposals touching values/goals/capabilities/policies can be accepted; preferences.* amendments do not require it. The caller chooses when to validate but never supplies the verdict: ADAM refuses any measurement EVE did not author.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "action": { "type": "string", "enum": ["create", "evaluate"], "default": "create" },
+                    "action": { "type": "string", "enum": ["create", "validate"], "default": "create" },
                     "kind": { "type": "string", "enum": ["retire_skill", "reconcile_belief", "investigate_conflict", "amend_genome"] },
                     "skill_name": { "type": "string" },
                     "statement": { "type": "string" },
@@ -107,19 +107,8 @@ pub fn tool_definitions() -> Vec<Value> {
                     "rationale": { "type": "string" },
                     "evidence": { "type": "array", "items": { "type": "string" } },
                     "confidence": { "type": "number" },
-                    "proposal_id": { "type": "string", "description": "required for action=\"evaluate\"" },
-                    "trials": {
-                        "type": "array",
-                        "description": "required for action=\"evaluate\": trial outcomes the caller already collected",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "succeeded": { "type": "boolean" },
-                                "detail": { "type": "string" }
-                            },
-                            "required": ["succeeded", "detail"]
-                        }
-                    }
+                    "proposal_id": { "type": "string", "description": "required for action=\"validate\"" },
+                    "correlation_id": { "type": "string", "description": "optional: groups this call's events with the rest of a developmental turn. Generated if omitted." }
                 }
             }
         }),

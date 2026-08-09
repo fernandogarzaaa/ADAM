@@ -48,45 +48,74 @@ should never need to know evolution exists). The composition root
 (`adam-organism`, or a future scheduled-reflection job) is responsible
 for translating real state into signals.
 
-## EVE only scores; it never decides
+## EVE only measures; it never decides
 
-`SimulationEvaluator::evaluate` returns a `Recommendation`, not an
-`accept`/`reject` action. Keeping evaluation and decision-making as
-separate steps means a future governance policy could require, say,
-unanimous agreement between EVE's recommendation and a human reviewer
-without EVE's code needing to change at all.
+`EveClient::validate` returns a `FitnessResult` carrying a
+`Recommendation`, not an `accept`/`reject` action. Keeping measurement and
+decision separate means a governance policy could require, say, unanimous
+agreement between EVE's recommendation and a human reviewer without EVE's
+code changing at all.
 
-## `AmendGenome` beyond `preferences.*` requires a prior EVE approval
+## Fitness is measured elsewhere, and ADAM checks that it was
+
+This design previously had ADAM score its own proposals: `adam-eve`
+aggregated the results of a closure the caller supplied and reported the
+pass rate as evidence. The gate below was real; the evidence behind it was
+self-supplied. A component scoring its own proposed changes is not
+measuring, it is asserting.
+
+Measurement now happens in the EVE repository, over a process boundary,
+and every result must satisfy `FitnessResult::is_authentic`:
+
+- **EVE authored it.** `provenance.authored_by` must be `eve`. ADAM minting
+  its own fitness is the exact failure this removes.
+- **It concerns this mutation.** A result pinned to a different proposal is
+  evidence about something else.
+- **The comparison is symmetric.** Baseline and candidate must have run the
+  same number of times, or the two sides were not measured alike.
+
+The measurement itself is counterfactual: EVE runs its construct-validated
+scenario suite twice at the same seed — once as the organism is, once with
+the mutation projected onto the simulated operator — and reports the
+difference. An absolute score would be uninterpretable.
+
+The seed is derived deterministically from the mutation id and the genome
+hash it applies to (`adam_eve::derive_seed`), so re-validating the same
+proposal against the same genome reproduces the same experiment. With a
+random seed, "we measured it again and got a different answer" would be
+indistinguishable from "the mutation is marginal".
+
+## `AmendGenome` beyond `preferences.*` requires an approving measurement
 
 `Organism::apply` still applies `preferences.*` amendments unconditionally
-— they're low-stakes and reversible. `values`, `goals`, `capabilities`,
+— they are low-stakes and reversible. `values`, `goals`, `capabilities`
 and `policies` describe the organism's core identity and behavioral
-constraints, so automatically rewriting them from a threshold-triggered
-proposal would undermine the "no silent evolution of identity" spirit of
-the safety requirements even though the action itself goes through
-governance. Rather than refusing these fields outright, `Organism` now
-requires a prior `evaluate_mutation`/`evaluate_mutation_from_trials` call
-on that exact proposal that resulted in `Recommendation::Approve` — real
-trial evidence, not the proposal's self-reported confidence — before
-`accept_mutation` will apply it. This is the intentional "EVE approval +
-a de facto cooling-off period" policy this document previously described
-as a future requirement: a proposal must clear evaluation as a distinct,
-auditable step before it can be accepted.
+constraints, so rewriting them from a threshold-triggered proposal would
+undermine the "no silent evolution of identity" requirement even though
+the action already passes through governance.
 
-Risk (`risk_for` in `adam-eve`) is a fixed function of `ProposalKind`
-only — never the proposal's own self-reported `confidence` — precisely
-because factoring in a self-reported field would let a caller lower its
-own risk score simply by asserting higher confidence. `AmendGenome`'s
-baseline risk (`0.6`) sits exactly at the default `max_acceptable_risk`
-(`0.6`), so it is *not* a hard block: sufficient trial evidence (at
-least `SimulationEvaluator::trial_count` trials, all passing) can still
-reach `Approve`. Deployments that want genome amendments to require
-human sign-off unconditionally should raise `max_acceptable_risk` above
-`0.6` in `EvaluationThresholds`, which forces every `AmendGenome`
-evaluation to `NeedsReview` regardless of trial outcome. Evaluations
-reporting fewer than `trial_count` trials are likewise forced to
-`NeedsReview` — a client can't substitute one self-reported "success"
-for the configured minimum evidentiary volume.
+Accepting one therefore requires a prior `validate_mutation` call on that
+exact proposal that returned `Recommendation::Approve`. If no fitness
+provider is configured at all, acceptance fails with
+`NoFitnessProvider` — an organism that cannot measure a change must
+refuse to make it, not make it blind.
+
+Risk (`adam_eve::intrinsic_risk`) is a fixed function of what the proposal
+touches — never its own self-reported `confidence` — precisely because
+factoring in a self-reported field would let a caller lower its own risk
+score by asserting higher confidence. EVE additionally withholds automatic
+approval from any mutation above its `maxAutoApproveRiskBp` ceiling, and
+from any mutation that improves the aggregate while regressing a single
+scenario past `maxScenarioRegressionBp`: a change that lifts the mean while
+destroying one case is not an improvement, and averaging would hide exactly
+that.
+
+EVE declines to score mutations with no operational signature — amending a
+goal, reconciling a belief — reporting `needs_review` with that reason
+rather than inventing a number. Such a proposal is escalated, not blocked:
+governance still decides, now knowing simulation had nothing to say rather
+than believing it had approved.
+
 `beliefs` and `skills` genome fields remain unsupported entirely — they
 are redundant with the dedicated `adam-beliefs`/`adam-skills` subsystems
 and amending them via the genome would create two sources of truth for
@@ -124,7 +153,7 @@ memory exhaustion vector.
 
 `Organism::accept_mutation` runs its precondition checks
 (`validate_applicable`) *before* calling `proposal.accept()`, not after.
-A failing precondition (missing EVE approval, an already-removed skill)
+A failing precondition (a missing or non-approving fitness measurement, an already-removed skill)
 must leave the proposal retriable or rejectable rather than permanently
 stuck `Accepted` with no effect applied and no audit entry — mutating the
 proposal's state is the one step in this path that can't be undone, so

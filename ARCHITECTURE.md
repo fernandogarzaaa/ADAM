@@ -18,11 +18,22 @@ crate's internals — composition happens one layer up, in `adam-organism`.
   │adam-kernel│ │adam-   │ │adam-   │ │adam-      │ │adam-       │ │adam-        │
   │ (genome)  │ │memory  │ │skills  │ │beliefs    │ │evolution   │ │governance   │
   └───────────┘ └────────┘ └────────┘ └───────────┘ └─────┬──────┘ └─────────────┘
-                                                            │ scored by
+                                                            │ measured by
                                                       ┌─────▼──────┐
-                                                      │  adam-eve  │
-                                                      └────────────┘
+                                                      │  adam-eve  │  CP/1 client
+                                                      └─────┬──────┘
+                                                            │ CP/1 over stdio
+                                                            │ (no build-time edge)
+                                                      ┌─────▼──────────────┐
+                                                      │  EVE repository    │
+                                                      │  eve-cp1 endpoint  │
+                                                      └────────────────────┘
 ```
+
+Every crate above also depends on `adam-protocol`, the CP/1 binding, for
+the canonical encoding and event catalog the organism announces itself
+through. The edge to EVE is the only one that leaves this repository, and
+it carries data, never symbols — see `protocol/cp1/SPEC.md`.
 
 ## Crate responsibilities
 
@@ -67,12 +78,29 @@ callers translate real state into lightweight signal structs — and they
 never self-apply; they sit `Proposed` until something outside this crate
 calls `accept()`/`reject()`.
 
-### `adam-eve` (Phase 6)
-`SimulationEvaluator` scores a proposal by running it through
-caller-supplied sandboxed `TrialFn` closures, aggregating the pass rate
-into a fitness score and combining it with proposal-kind-specific
-intrinsic risk (genome amendments carry the highest baseline risk). EVE
-only scores; it never decides.
+### `adam-protocol`
+A hand-written binding for CP/1, the wire contract ADAM shares with EVE
+and AXIOM-AETHER. Canonical byte-exact encoding (no floating point on the
+wire — every ratio is an integer in basis points), content-hash sealing,
+signed transport envelopes, the closed fourteen-event catalog, and the
+conformance suite that verifies this binding against the golden corpus
+vendored under `protocol/cp1/`. Nothing here depends on either other
+repository at build time; drift is caught by the conformance test and the
+manifest hash check.
+
+### `adam-eve`
+ADAM's **client** for the real EVE. `EveClient` projects an
+`EvolutionProposal` onto a CP/1 `Mutation`, derives a reproducible seed,
+and asks EVE to measure it; `Cp1Subprocess` is the transport, spawning
+EVE's `eve-cp1` endpoint and exchanging one line each way.
+
+This crate previously scored proposals itself, by calling a closure the
+*caller* supplied — the organism producing its own evidence. It no longer
+contains any path that produces a fitness result, and no error variant
+meaning "measurement failed, proceed anyway". What it still owns is
+`intrinsic_risk` (how consequential a change is, given what it touches)
+and `derive_seed` (which seed the measurement runs at). The verdict is
+EVE's; this crate's role in it is to verify EVE authored it.
 
 ### `adam-organism` (Phase 7, composition root)
 `Organism` owns one `GenomeHistory`, `MemoryStore`, `SkillRegistry`,
@@ -103,7 +131,13 @@ record, and cannot change itself arbitrarily fast.
 1. Something (an MCP client, a scheduled reflection pass) calls
    `adam_evolve` or `adam_propose_mutation` → a `EvolutionProposal` is
    recorded, status `Proposed`.
-2. Optionally, EVE scores the proposal via sandboxed trials.
+2. For amendments beyond `preferences.*`, `adam_propose_mutation` with
+   `action="validate"` sends the proposal to EVE, which runs its scenario
+   suite twice at the same seed — once as the organism is, once with the
+   mutation projected onto the simulated operator — and returns a
+   counterfactual `FitnessResult`. ADAM refuses any result EVE did not
+   author, that concerns a different mutation, or whose two sides ran a
+   different number of times.
 3. A human or governing process calls `adam_accept_mutation`.
 4. `GovernanceGate::authorize_acceptance` checks the rate limit. If
    exceeded, the call fails and the proposal is untouched (still
