@@ -1,0 +1,19 @@
+[package]
+name = "adam-eventlog"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Durable, append-only SQLite storage for CP/1 events: the organism's episodic memory"
+
+# This crate exists so `adam-protocol` does not have to. That crate documents
+# itself as a dependency-light vendored copy of a contract owned elsewhere, and
+# a durable sink needs rusqlite — so the storage lives here and the contract
+# stays liftable.
+[dependencies]
+adam-protocol = { path = "../adam-protocol" }
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

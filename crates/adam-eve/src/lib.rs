@@ -95,22 +95,22 @@ mod tests {
             seed: 1337,
             scenario_ids: vec!["excellent".to_string()],
             trials: 3,
-            baseline: M {
-                composite_bp: BasisPoints::from_ratio(0.64),
-                task_success_bp: BasisPoints::from_ratio(0.7),
-                frustration_bp: BasisPoints::from_ratio(0.3),
-                trust_bp: BasisPoints::from_ratio(0.6),
-                cognitive_load_bp: BasisPoints::from_ratio(0.4),
-                runs: 9,
-            },
-            candidate: M {
-                composite_bp: BasisPoints::from_ratio(0.71),
-                task_success_bp: BasisPoints::from_ratio(0.78),
-                frustration_bp: BasisPoints::from_ratio(0.26),
-                trust_bp: BasisPoints::from_ratio(0.65),
-                cognitive_load_bp: BasisPoints::from_ratio(0.39),
-                runs: 9,
-            },
+            baseline: M::experience(
+                BasisPoints::from_ratio(0.64),
+                BasisPoints::from_ratio(0.7),
+                BasisPoints::from_ratio(0.3),
+                BasisPoints::from_ratio(0.6),
+                BasisPoints::from_ratio(0.4),
+                9,
+            ),
+            candidate: M::experience(
+                BasisPoints::from_ratio(0.71),
+                BasisPoints::from_ratio(0.78),
+                BasisPoints::from_ratio(0.26),
+                BasisPoints::from_ratio(0.65),
+                BasisPoints::from_ratio(0.39),
+                9,
+            ),
             delta_bp: SignedBasisPoints::new(700),
             recommendation: Recommendation::Approve,
             reason: "candidate improved the composite by 700bp".to_string(),
@@ -128,7 +128,7 @@ mod tests {
         assert_eq!(result.mutation_id, "m1");
         assert_eq!(result.recommendation, Recommendation::Approve);
         assert_eq!(result.delta_bp.raw(), 700);
-        assert!(result.is_authentic("m1"));
+        assert!(result.is_authentic("m1", Component::Eve));
     }
 
     #[test]
@@ -205,7 +205,11 @@ mod tests {
         .unwrap();
         let provider = StubProvider::returning(forged);
         let err = measure_and_verify(&provider, &request).unwrap_err();
-        assert!(err.to_string().contains("only EVE may author"));
+        assert!(
+            err.to_string().contains("authored by adam")
+                && err.to_string().contains("is not an evaluator"),
+            "unexpected reason: {err}"
+        );
     }
 
     #[test]

@@ -31,6 +31,14 @@ pub enum Component {
     Adam,
     Eve,
     Axiom,
+    /// The real-task evaluator: it runs the organism's genome against an actual
+    /// external workspace and reports the objective that workspace defines.
+    ///
+    /// It has its own identity rather than reusing `Eve` because the two
+    /// measure different things. Letting a real-task measurement claim EVE's
+    /// authorship would make the provenance chain internally consistent and
+    /// factually wrong, which is worse than rejecting the document outright.
+    Pcr,
 }
 
 impl Component {
@@ -39,7 +47,18 @@ impl Component {
             Component::Adam => "adam",
             Component::Eve => "eve",
             Component::Axiom => "axiom",
+            Component::Pcr => "pcr",
         }
+    }
+
+    /// Whether this component may author evidence about a mutation.
+    ///
+    /// ADAM is excluded by design: a component scoring its own proposed changes
+    /// is not measuring, it is asserting. AXIOM is excluded because it observes
+    /// no environment — it compresses and grounds context, and so has nothing
+    /// to report about whether a mutation helped.
+    pub fn is_evaluator(self) -> bool {
+        matches!(self, Component::Eve | Component::Pcr)
     }
 }
 
@@ -417,14 +436,71 @@ impl ValidationRequest {
 }
 
 /// One side of a counterfactual fitness comparison.
+///
+/// Two members are universal, because every evaluator has them: `composite_bp`
+/// is the objective being optimised, higher-is-better, on a fixed `[0, 10000]`
+/// scale; `runs` is how many executions stand behind it. The remaining four
+/// describe a *simulated human* and belong to EVE alone. They are optional so
+/// that an evaluator with no user model can decline to report them instead of
+/// inventing them — a fabricated `trust_bp` would be indistinguishable on the
+/// wire from a measured one, which is exactly the failure this type exists to
+/// prevent.
+///
+/// `composite_bp` deliberately does **not** say what the objective *is*.
+/// `provenance.authored_by` names the evaluator and `provenance.origin` names
+/// the objective it measured (`eve:cp1/validate` against
+/// `pcr:workspace/objective_bp`), both already required on every CP/1 document.
+/// Two numbers on the same scale from different origins are not comparable, and
+/// the origin is what says so.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Measurement {
     pub composite_bp: BasisPoints,
-    pub task_success_bp: BasisPoints,
-    pub frustration_bp: BasisPoints,
-    pub trust_bp: BasisPoints,
-    pub cognitive_load_bp: BasisPoints,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_success_bp: Option<BasisPoints>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frustration_bp: Option<BasisPoints>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust_bp: Option<BasisPoints>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cognitive_load_bp: Option<BasisPoints>,
     pub runs: u32,
+}
+
+impl Measurement {
+    /// A measurement of simulated user experience, as EVE reports it.
+    pub fn experience(
+        composite_bp: BasisPoints,
+        task_success_bp: BasisPoints,
+        frustration_bp: BasisPoints,
+        trust_bp: BasisPoints,
+        cognitive_load_bp: BasisPoints,
+        runs: u32,
+    ) -> Self {
+        Self {
+            composite_bp,
+            task_success_bp: Some(task_success_bp),
+            frustration_bp: Some(frustration_bp),
+            trust_bp: Some(trust_bp),
+            cognitive_load_bp: Some(cognitive_load_bp),
+            runs,
+        }
+    }
+
+    /// A measurement of a scalar objective by an evaluator with no user model.
+    ///
+    /// There is no way to reach the experience members through this
+    /// constructor, which is the point: an evaluator that cannot observe
+    /// frustration cannot accidentally report it.
+    pub fn objective(composite_bp: BasisPoints, runs: u32) -> Self {
+        Self {
+            composite_bp,
+            task_success_bp: None,
+            frustration_bp: None,
+            trust_bp: None,
+            cognitive_load_bp: None,
+            runs,
+        }
+    }
 }
 
 /// What EVE recommends doing with a mutation.
@@ -436,7 +512,7 @@ pub enum Recommendation {
     Reject,
 }
 
-/// Evidence-backed measurement of a mutation, authored by EVE.
+/// Evidence-backed measurement of a mutation, authored by an evaluator.
 ///
 /// ADAM reads this and must never mint one. The check is
 /// [`FitnessResult::is_authentic`], and it is what makes the acceptance gate
@@ -463,35 +539,49 @@ pub struct FitnessResult {
 impl FitnessResult {
     /// Whether this result is a measurement ADAM may rely on.
     ///
-    /// Three independent conditions, each of which has to hold for the number
-    /// to mean what it claims:
+    /// Four independent conditions, each of which has to hold for the number to
+    /// mean what it claims:
     ///
-    /// - It was authored by EVE. ADAM minting its own fitness would be exactly
-    ///   the self-scoring this design removes.
+    /// - It was authored by a component permitted to author evidence at all.
+    ///   ADAM minting its own fitness would be exactly the self-scoring this
+    ///   design removes, and no `expected` value can authorise it.
+    /// - It was authored by the evaluator the request was actually dispatched
+    ///   to. Without this, one evaluator could answer for another and the
+    ///   provenance chain would record the wrong objective.
     /// - It concerns `mutation_id`. A result pinned to a different proposal is
     ///   evidence about something else.
     /// - Baseline and candidate were measured over the same number of runs.
     ///   The comparison is only counterfactual if both sides saw the same work;
     ///   differing run counts mean one side was measured differently.
-    pub fn is_authentic(&self, mutation_id: &str) -> bool {
-        self.provenance.authored_by == Component::Eve
-            && self.mutation_id == mutation_id
-            && self.baseline.runs == self.candidate.runs
-            && self.doc_type == "FitnessResult"
+    ///
+    /// The first two are separate on purpose. Checking only `== expected` would
+    /// make the rule as strong as its weakest caller: a provider that declared
+    /// itself to be ADAM would then verify successfully.
+    pub fn is_authentic(&self, mutation_id: &str, expected: Component) -> bool {
+        self.authenticity_failure(mutation_id, expected).is_none()
     }
 
     /// Why [`FitnessResult::is_authentic`] returned false, for an error message.
-    pub fn authenticity_failure(&self, mutation_id: &str) -> Option<String> {
+    pub fn authenticity_failure(&self, mutation_id: &str, expected: Component) -> Option<String> {
         if self.doc_type != "FitnessResult" {
             return Some(format!(
                 "document is a {}, not a FitnessResult",
                 self.doc_type
             ));
         }
-        if self.provenance.authored_by != Component::Eve {
+        let author = self.provenance.authored_by;
+        if !author.is_evaluator() {
             return Some(format!(
-                "authored by {}, but only EVE may author a FitnessResult",
-                self.provenance.authored_by.as_str()
+                "authored by {}, which is not an evaluator; only a component that \
+                 performed the measurement may author a FitnessResult",
+                author.as_str()
+            ));
+        }
+        if author != expected {
+            return Some(format!(
+                "authored by {}, but the measurement was requested from {}",
+                author.as_str(),
+                expected.as_str()
             ));
         }
         if self.mutation_id != mutation_id {
@@ -519,14 +609,14 @@ mod tests {
     }
 
     fn measurement(runs: u32) -> Measurement {
-        Measurement {
-            composite_bp: BasisPoints::from_ratio(0.64),
-            task_success_bp: BasisPoints::from_ratio(0.7),
-            frustration_bp: BasisPoints::from_ratio(0.3),
-            trust_bp: BasisPoints::from_ratio(0.6),
-            cognitive_load_bp: BasisPoints::from_ratio(0.4),
+        Measurement::experience(
+            BasisPoints::from_ratio(0.64),
+            BasisPoints::from_ratio(0.7),
+            BasisPoints::from_ratio(0.3),
+            BasisPoints::from_ratio(0.6),
+            BasisPoints::from_ratio(0.4),
             runs,
-        }
+        )
     }
 
     fn fitness(
@@ -697,27 +787,66 @@ mod tests {
     #[test]
     fn an_eve_authored_result_for_the_right_mutation_is_authentic() {
         let result = fitness(Component::Eve, "m1", 9, 9);
-        assert!(result.is_authentic("m1"));
-        assert_eq!(result.authenticity_failure("m1"), None);
+        assert!(result.is_authentic("m1", Component::Eve));
+        assert_eq!(result.authenticity_failure("m1", Component::Eve), None);
+    }
+
+    #[test]
+    fn a_real_task_authored_result_is_authentic_on_the_same_terms() {
+        // The generalization, stated as a test: EVE is not special, an
+        // evaluator is. A real-task result reports no experience members and
+        // is accepted anyway, because nothing about the objective it measured
+        // requires a simulated human.
+        let mut result = fitness(Component::Pcr, "m1", 1, 1);
+        result.baseline = Measurement::objective(BasisPoints::from_ratio(0.5), 1);
+        result.candidate = Measurement::objective(BasisPoints::from_ratio(0.75), 1);
+        assert!(result.is_authentic("m1", Component::Pcr));
+        assert_eq!(result.baseline.trust_bp, None);
     }
 
     #[test]
     fn a_self_authored_result_is_never_authentic() {
-        // The whole point: ADAM may not score its own proposals.
-        let result = fitness(Component::Adam, "m1", 9, 9);
-        assert!(!result.is_authentic("m1"));
+        // The whole point: ADAM may not score its own proposals. Not even when
+        // the caller says it expected ADAM to — the evaluator test runs first
+        // and no `expected` value can authorise self-scoring.
+        for expected in [Component::Eve, Component::Pcr, Component::Adam] {
+            let result = fitness(Component::Adam, "m1", 9, 9);
+            assert!(!result.is_authentic("m1", expected));
+            assert!(result
+                .authenticity_failure("m1", expected)
+                .unwrap()
+                .contains("is not an evaluator"));
+        }
+    }
+
+    #[test]
+    fn one_evaluator_may_not_answer_for_another() {
+        // Both are evaluators, so the first check passes and the second is the
+        // one doing the work: a real-task number answering a request sent to
+        // EVE would silently substitute one objective for another.
+        let result = fitness(Component::Pcr, "m1", 9, 9);
+        assert!(!result.is_authentic("m1", Component::Eve));
         assert!(result
-            .authenticity_failure("m1")
+            .authenticity_failure("m1", Component::Eve)
             .unwrap()
-            .contains("only EVE may author"));
+            .contains("the measurement was requested from eve"));
+    }
+
+    #[test]
+    fn axiom_is_not_an_evaluator() {
+        // AXIOM observes no environment. It has nothing to report here, and
+        // saying so in the type keeps it horizontal infrastructure.
+        assert!(!Component::Axiom.is_evaluator());
+        let result = fitness(Component::Axiom, "m1", 9, 9);
+        assert!(!result.is_authentic("m1", Component::Axiom));
     }
 
     #[test]
     fn a_result_for_a_different_mutation_is_not_evidence_about_this_one() {
         let result = fitness(Component::Eve, "other", 9, 9);
-        assert!(!result.is_authentic("m1"));
+        assert!(!result.is_authentic("m1", Component::Eve));
         assert!(result
-            .authenticity_failure("m1")
+            .authenticity_failure("m1", Component::Eve)
             .unwrap()
             .contains("not m1"));
     }
@@ -725,9 +854,9 @@ mod tests {
     #[test]
     fn mismatched_run_counts_break_the_counterfactual() {
         let result = fitness(Component::Eve, "m1", 9, 3);
-        assert!(!result.is_authentic("m1"));
+        assert!(!result.is_authentic("m1", Component::Eve));
         assert!(result
-            .authenticity_failure("m1")
+            .authenticity_failure("m1", Component::Eve)
             .unwrap()
             .contains("not counterfactual"));
     }

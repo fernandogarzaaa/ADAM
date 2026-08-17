@@ -13,7 +13,9 @@ use adam_evolution::{
 use adam_governance::{AuditEntry, EvolutionLimits, GovernanceError, GovernanceGate};
 use adam_kernel::{Genome, GenomeDiff, GenomeError, GenomeHistory, GenomeVersion, VersionId};
 use adam_memory::{MemoryError, MemoryId, MemoryKind, MemoryRecord, MemoryStore, Provenance};
-use adam_protocol::{Event, EventKind, EventSink, NullSink, PayloadValue, SubjectType};
+use adam_protocol::{
+    Component, Event, EventKind, EventSink, NullSink, PayloadValue, SubjectType,
+};
 use adam_skills::{Skill, SkillRegistry};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -121,6 +123,18 @@ pub struct Organism {
     fitness: std::collections::HashMap<ProposalId, FitnessResult>,
     /// Where this organism announces what it does. Defaults to discarding.
     events: std::sync::Arc<dyn EventSink>,
+    /// The most recent event id per causal chain, so a later event can name
+    /// the earlier one that caused it.
+    ///
+    /// Keyed by the thing the chain is *about* rather than by any single
+    /// event's subject: a proposal's lifecycle runs from `MutationProposed`
+    /// through `GenomeCommitted`, and that last event's subject is a genome
+    /// version. Only edges the organism actually knows are recorded — nothing
+    /// is inferred from the order events happen to arrive in, because a
+    /// sequence is not a cause.
+    ///
+    /// A `Mutex` because several announcing methods take `&self`.
+    causes: std::sync::Mutex<std::collections::HashMap<String, String>>,
     genome_path: Option<String>,
 }
 
@@ -144,6 +158,7 @@ impl Organism {
             eve: None,
             fitness: std::collections::HashMap::new(),
             events: std::sync::Arc::new(NullSink),
+            causes: std::sync::Mutex::new(std::collections::HashMap::new()),
             genome_path: None,
         })
     }
@@ -184,6 +199,7 @@ impl Organism {
             eve: None,
             fitness: std::collections::HashMap::new(),
             events: std::sync::Arc::new(NullSink),
+            causes: std::sync::Mutex::new(std::collections::HashMap::new()),
             genome_path: Some(genome_path.to_string()),
         };
         organism.persist_genome()?;
@@ -213,6 +229,9 @@ impl Organism {
     }
 
     /// Announce a fact. Never fails, and never blocks the caller's work.
+    ///
+    /// Returns the id of the emitted event so a caller driving a turn can
+    /// name it as the cause of something later.
     fn emit(
         &self,
         kind: EventKind,
@@ -220,12 +239,73 @@ impl Organism {
         subject_type: SubjectType,
         correlation_id: &str,
         payload: &[(&str, PayloadValue)],
-    ) {
+    ) -> String {
+        self.emit_as(
+            Component::Adam,
+            kind,
+            subject_id,
+            subject_type,
+            correlation_id,
+            payload,
+        )
+    }
+
+    /// Announce a fact that some *other* component performed.
+    ///
+    /// Separate from [`Organism::emit`] so that relaying is never accidental.
+    /// ADAM writes this log line, but ADAM did not do the thing: a measurement
+    /// is performed by an evaluator, over a boundary ADAM does not control, and
+    /// an event claiming otherwise would misattribute the one act the whole
+    /// governance chain rests on.
+    ///
+    /// `actor` must come from a document ADAM has *verified*, never from a
+    /// document ADAM composed — the distinction between copying an attribution
+    /// and asserting one. [`EventKind::emitters`] then rejects any actor the
+    /// kind does not permit, so a relay cannot launder an attribution either.
+    fn emit_as(
+        &self,
+        actor: Component,
+        kind: EventKind,
+        subject_id: impl Into<String>,
+        subject_type: SubjectType,
+        correlation_id: &str,
+        payload: &[(&str, PayloadValue)],
+    ) -> String {
+        let subject_id = subject_id.into();
+        let chain = subject_id.clone();
+        self.emit_in_chain(
+            actor,
+            kind,
+            subject_id,
+            subject_type,
+            correlation_id,
+            payload,
+            &chain,
+        )
+    }
+
+    /// Announce a fact that continues the causal chain tracked under `chain`.
+    ///
+    /// The emitted event names the previous event in that chain as its cause,
+    /// and then becomes the chain's newest link. An unknown chain simply
+    /// produces an event with no `causation_id` — a missing edge is honest,
+    /// whereas a guessed one would make the audit trail worthless.
+    fn emit_in_chain(
+        &self,
+        actor: Component,
+        kind: EventKind,
+        subject_id: impl Into<String>,
+        subject_type: SubjectType,
+        correlation_id: &str,
+        payload: &[(&str, PayloadValue)],
+        chain: &str,
+    ) -> String {
         let payload: BTreeMap<String, PayloadValue> = payload
             .iter()
             .map(|(k, v)| ((*k).to_string(), v.clone()))
             .collect();
-        let event = Event::new(
+        let mut event = Event::new(
+            actor,
             kind,
             subject_id,
             subject_type,
@@ -233,7 +313,44 @@ impl Organism {
             payload,
             "adam:organism",
         );
+        let id = event.id.clone();
+        {
+            let mut causes = self.causes.lock().expect("causes mutex poisoned");
+            if let Some(cause) = causes.get(chain) {
+                event = event.caused_by(cause.clone());
+            }
+            causes.insert(chain.to_string(), id.clone());
+        }
         self.events.emit(&event);
+        id
+    }
+
+    /// The newest event id in a causal chain, or `None` if nothing has been
+    /// announced under that key yet.
+    ///
+    /// A caller driving a turn uses this to find the event it should attribute
+    /// a later decision to — for example the memory event carrying an external
+    /// observation, before the proposal that observation motivated exists.
+    pub fn last_event(&self, chain: &str) -> Option<String> {
+        self.causes
+            .lock()
+            .expect("causes mutex poisoned")
+            .get(chain)
+            .cloned()
+    }
+
+    /// Declare that the next event announced under `chain` was caused by
+    /// `cause_event_id`.
+    ///
+    /// This is how evidence from outside the organism enters the causal
+    /// record: only the caller knows that a particular proposal exists because
+    /// of a particular observation, and asserting it explicitly keeps that
+    /// claim traceable to whoever made it rather than inferred here.
+    pub fn link_cause(&self, chain: &str, cause_event_id: impl Into<String>) {
+        self.causes
+            .lock()
+            .expect("causes mutex poisoned")
+            .insert(chain.to_string(), cause_event_id.into());
     }
 
     fn persist_genome(&self) -> Result<(), OrganismError> {
@@ -334,6 +451,12 @@ impl Organism {
             &[
                 ("kind", PayloadValue::from(kind.as_str())),
                 ("origin", PayloadValue::from(origin)),
+                // The observation itself, not just a pointer to it. Without
+                // this the event log can say a memory was consolidated but not
+                // what was noticed, and a causal chain that ends at an opaque
+                // id cannot answer why the organism changed — it only says
+                // where to look, in a store that may not have been kept.
+                ("content", PayloadValue::from(content)),
                 (
                     "confidence_bp",
                     PayloadValue::from(i64::from(
@@ -642,7 +765,14 @@ impl Organism {
             .validate(&proposal, &before_hash, &after_hash)
             .map_err(|err: FitnessError| OrganismError::Fitness(err.to_string()))?;
 
-        self.emit(
+        // Relayed, not authored. The evaluator named here is copied from the
+        // result's provenance, which `measure_and_verify` has already checked
+        // is a real evaluator and is the one this request was dispatched to.
+        // Before this the emitter was derived from the event kind, so an
+        // ADAM-written FitnessMeasured was recorded as EVE's — internally
+        // consistent and factually wrong, and undetectable in the log.
+        self.emit_as(
+            result.provenance.authored_by,
             EventKind::FitnessMeasured,
             id.to_string(),
             SubjectType::Mutation,
@@ -887,7 +1017,11 @@ impl Organism {
                 self.persist_genome()?;
                 let label = self.history.get(new_version)?.label.clone();
 
-                self.emit(
+                // Chained under the mutation rather than the genome version:
+                // this commit exists because that proposal was accepted, and
+                // the version it produced has no earlier event of its own.
+                self.emit_in_chain(
+                    Component::Adam,
                     EventKind::GenomeCommitted,
                     new_version.to_string(),
                     SubjectType::Genome,
@@ -897,6 +1031,7 @@ impl Organism {
                         ("reason", PayloadValue::from(reason)),
                         ("mutation_id", PayloadValue::from(id.to_string())),
                     ],
+                    &id.to_string(),
                 );
 
                 Ok(AppliedEffect::GenomeAmended { new_version, label })
@@ -921,12 +1056,19 @@ impl Organism {
     /// forward commit rather than a silent undo. Accepting one requires a
     /// fitness measurement on this exact proposal that recommends approval.
     ///
-    /// The measurement must additionally be authentic — authored by EVE, about
-    /// this mutation, with baseline and candidate compared over the same number
-    /// of runs. `EveClient` already refuses anything else, so a measurement in
-    /// `self.fitness` has passed that check; re-asserting it here is defence in
-    /// depth against a future path that populates the map some other way, and
-    /// costs one comparison.
+    /// The measurement must additionally be authentic — authored by a real
+    /// evaluator (never by ADAM), about this mutation, with baseline and
+    /// candidate compared over the same number of runs. `EveClient` already
+    /// refuses anything else, so a measurement in `self.fitness` has passed that
+    /// check; re-asserting it here is defence in depth against a future path
+    /// that populates the map some other way, and costs one comparison.
+    ///
+    /// The expected evaluator is taken from the result itself, which looks
+    /// circular and is not: the comparison that catches a substituted evaluator
+    /// is *who was asked versus who answered*, and only `measure_and_verify`
+    /// knows who was asked. What remains checkable here is the property that
+    /// does not need that knowledge — that the author is an evaluator at all —
+    /// and it is the property that stops ADAM scoring itself.
     fn require_eve_approval(&self, id: ProposalId, field: &str) -> Result<(), OrganismError> {
         let Some(result) = self.fitness.get(&id) else {
             return Err(if self.eve.is_none() {
@@ -941,7 +1083,9 @@ impl Organism {
             });
         };
 
-        if let Some(detail) = result.authenticity_failure(&id.to_string()) {
+        if let Some(detail) =
+            result.authenticity_failure(&id.to_string(), result.provenance.authored_by)
+        {
             return Err(OrganismError::EveApprovalRequired {
                 field: field.to_string(),
                 found: detail,
@@ -1054,7 +1198,12 @@ fn effect_label(effect: &AppliedEffect) -> &'static str {
 /// `"<list>.remove"` (removes an entry equal to `current_value`). Returns
 /// whether the list actually changed, so callers can avoid committing a
 /// no-op genome version.
-fn apply_list_amendment(
+///
+/// Public because an evaluator has to build the candidate genome the *same*
+/// way acceptance will. A second implementation of "what this mutation means"
+/// would let a provider measure one change while ADAM later applies another,
+/// and the comparison would silently be about the wrong thing.
+pub fn apply_list_amendment(
     genome: &mut Genome,
     field: &str,
     current_value: &str,

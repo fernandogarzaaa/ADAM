@@ -294,17 +294,27 @@ fn provenance_edge_problems(
         let mutation_id = document.get("mutation_id").and_then(Value::as_str);
 
         // Order in `derived_from` carries no meaning, and nothing forbids a
-        // result from also referencing an unrelated SimulationCompleted (a
-        // memory citing several runs, say). So this evaluates every referenced
-        // completion rather than stopping at the first one: the edge is valid
-        // the moment *any* of them matches both mutation_id and the reported
-        // run counts, and a candidate that fails one check is not evidence the
-        // edge is broken if a later candidate satisfies it.
+        // result from also referencing an unrelated run event (a memory citing
+        // several runs, say). So this evaluates every referenced completion
+        // rather than stopping at the first one: the edge is valid the moment
+        // *any* of them matches both mutation_id and the reported run counts,
+        // and a candidate that fails one check is not evidence the edge is
+        // broken if a later candidate satisfies it.
+        //
+        // Either run event will do. `SimulationCompleted` and
+        // `TaskRunCompleted` answer the same question — what execution produced
+        // these run counts — for the two evaluators that exist. Accepting only
+        // the first would force a real-task measurement to name a simulation
+        // that never happened, which is the fabrication this rule exists to
+        // catch, arrived at from the other direction.
         let completions: Vec<&Value> = derived
             .iter()
             .filter_map(|ref_id| doc_by_id.get(ref_id))
             .filter(|referenced| {
-                referenced.get("type").and_then(Value::as_str) == Some("SimulationCompleted")
+                matches!(
+                    referenced.get("type").and_then(Value::as_str),
+                    Some("SimulationCompleted") | Some("TaskRunCompleted")
+                )
             })
             .collect();
 
@@ -312,9 +322,9 @@ fn provenance_edge_problems(
             failures.push(Failure {
                 fixture_line: *lineno,
                 document_type: doc_type.clone(),
-                detail: "provenance.derived_from names no SimulationCompleted; a measurement \
-                         that cannot be chained back to its run is indistinguishable from a \
-                         fabricated one (SPEC.md section 4.2)"
+                detail: "provenance.derived_from names no SimulationCompleted or \
+                         TaskRunCompleted; a measurement that cannot be chained back to its \
+                         run is indistinguishable from a fabricated one (SPEC.md section 4.2)"
                     .to_string(),
             });
             continue;
@@ -642,6 +652,41 @@ mod tests {
                 .iter()
                 .any(|f| f.detail.contains("but none has subject_id")),
             "{failures:#?}"
+        );
+    }
+
+    #[test]
+    fn a_real_task_run_satisfies_the_same_edge_as_a_simulation() {
+        // The generalization STEP 3B/3D exists for. Retype the corpus's run
+        // event as the real-task evaluator's — kind and actor together, since
+        // one without the other would be a document no emitter could have
+        // produced — and check 5 must still be satisfied.
+        //
+        // This is the property that decides whether a real-task measurement can
+        // be evidence at all: if the only acceptable run event were EVE's, an
+        // honest PCR result would have to name a simulation that never ran.
+        let retyped: String = corpus()
+            .lines()
+            .map(|line| {
+                if line.contains("\"SimulationCompleted\"") {
+                    line.replace("\"SimulationCompleted\"", "\"TaskRunCompleted\"")
+                        .replace("\"actor\":\"eve\"", "\"actor\":\"pcr\"")
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            retyped.contains("\"TaskRunCompleted\"") && retyped.contains("\"actor\":\"pcr\""),
+            "fixture shape changed; update this test"
+        );
+
+        let failures = check_corpus(&retyped);
+        assert!(
+            !failures.iter().any(|f| f.document_type == "FitnessResult"
+                && f.detail.contains("names no SimulationCompleted")),
+            "check 5 refused a real-task run event: {failures:#?}"
         );
     }
 

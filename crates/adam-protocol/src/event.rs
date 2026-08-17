@@ -2,7 +2,7 @@
 //!
 //! Subsystems announce facts; nothing calls anything directly. Before this,
 //! ADAM's only observable trace was the governance audit log, which recorded
-//! acceptances, rejections and rollbacks — three of the fourteen things worth
+//! acceptances, rejections and rollbacks — three of the fifteen things worth
 //! knowing. Everything else the organism did happened silently.
 //!
 //! An event names the canonical document it concerns (`subject_id` and
@@ -42,7 +42,14 @@ pub enum EventKind {
     MutationProposed,
     /// EVE finished a deterministic scenario run.
     SimulationCompleted,
-    /// EVE scored a mutation against baseline and candidate runs.
+    /// The real-task evaluator finished a run against the actual workspace.
+    ///
+    /// The counterpart of `SimulationCompleted`, and separate from it for the
+    /// same reason `Component::Pcr` is separate from `Component::Eve`: one
+    /// announces that a simulation happened, the other that real work happened.
+    /// A measured `FitnessResult` chains back to whichever produced its runs.
+    TaskRunCompleted,
+    /// An evaluator scored a mutation against baseline and candidate runs.
     FitnessMeasured,
     /// ADAM applied a proposal that passed governance.
     MutationAccepted,
@@ -65,6 +72,7 @@ impl EventKind {
             EventKind::ReflectionCompleted => "ReflectionCompleted",
             EventKind::MutationProposed => "MutationProposed",
             EventKind::SimulationCompleted => "SimulationCompleted",
+            EventKind::TaskRunCompleted => "TaskRunCompleted",
             EventKind::FitnessMeasured => "FitnessMeasured",
             EventKind::MutationAccepted => "MutationAccepted",
             EventKind::MutationRejected => "MutationRejected",
@@ -76,18 +84,26 @@ impl EventKind {
         Self::ALL.iter().copied().find(|k| k.as_str() == value)
     }
 
-    /// The component permitted to emit this event.
+    /// The components permitted to emit this event.
     ///
     /// Ownership of an event follows ownership of the concept it announces, so
     /// this is checkable: an `ObservationRecorded` from ADAM would mean ADAM
     /// minted an EVE-owned fact.
-    pub fn emitter(self) -> Component {
+    ///
+    /// Thirteen of the fifteen kinds have exactly one owner. `FitnessMeasured`
+    /// has two, because two independent evaluators can honestly score a
+    /// mutation — EVE against simulated experience, PCR against the real
+    /// objective — and a function that answered with one `Component` could only
+    /// do so by naming the wrong one for the other. The permission is still
+    /// closed: two named components, not "anyone".
+    pub fn emitters(self) -> &'static [Component] {
         match self {
             EventKind::ObservationRecorded
             | EventKind::ExperienceCreated
-            | EventKind::SimulationCompleted
-            | EventKind::FitnessMeasured => Component::Eve,
-            EventKind::ContextCompressed | EventKind::GroundingFailed => Component::Axiom,
+            | EventKind::SimulationCompleted => &[Component::Eve],
+            EventKind::TaskRunCompleted => &[Component::Pcr],
+            EventKind::FitnessMeasured => &[Component::Eve, Component::Pcr],
+            EventKind::ContextCompressed | EventKind::GroundingFailed => &[Component::Axiom],
             EventKind::MemoryConsolidated
             | EventKind::BeliefUpdated
             | EventKind::SkillLearned
@@ -95,11 +111,16 @@ impl EventKind {
             | EventKind::MutationProposed
             | EventKind::MutationAccepted
             | EventKind::MutationRejected
-            | EventKind::GenomeCommitted => Component::Adam,
+            | EventKind::GenomeCommitted => &[Component::Adam],
         }
     }
 
-    pub const ALL: [EventKind; 14] = [
+    /// Whether `actor` may emit this kind.
+    pub fn permits(self, actor: Component) -> bool {
+        self.emitters().contains(&actor)
+    }
+
+    pub const ALL: [EventKind; 15] = [
         EventKind::ObservationRecorded,
         EventKind::ExperienceCreated,
         EventKind::ContextCompressed,
@@ -110,6 +131,7 @@ impl EventKind {
         EventKind::ReflectionCompleted,
         EventKind::MutationProposed,
         EventKind::SimulationCompleted,
+        EventKind::TaskRunCompleted,
         EventKind::FitnessMeasured,
         EventKind::MutationAccepted,
         EventKind::MutationRejected,
@@ -199,8 +221,22 @@ pub struct Event {
 }
 
 impl Event {
-    /// Build an event. `actor` is fixed by the kind, never by the caller.
+    /// Build an event.
+    ///
+    /// `actor` is supplied rather than derived, because `FitnessMeasured` has
+    /// two legitimate emitters and only the caller knows which one it is. It is
+    /// checked against [`EventKind::emitters`], so the guarantee that an event
+    /// cannot claim an authorship it is not entitled to is unchanged — it moved
+    /// from "impossible to express" to "rejected when expressed".
+    ///
+    /// # Panics
+    ///
+    /// If `actor` is not permitted to emit `kind`. That is a programming error
+    /// in the emitting subsystem, not a malformed input: every call site names
+    /// a literal kind, and an event log that silently recorded the wrong actor
+    /// would corrupt every audit built on it afterwards.
     pub fn new(
+        actor: Component,
         kind: EventKind,
         subject_id: impl Into<String>,
         subject_type: SubjectType,
@@ -208,18 +244,25 @@ impl Event {
         payload: BTreeMap<String, PayloadValue>,
         origin: impl Into<String>,
     ) -> Self {
+        assert!(
+            kind.permits(actor),
+            "{} may not emit {}; permitted: {:?}",
+            actor.as_str(),
+            kind.as_str(),
+            kind.emitters()
+        );
         Self {
             cp: crate::CP.to_string(),
             kind,
             id: uuid::Uuid::new_v4().to_string(),
             occurred_at: Timestamp::now(),
-            actor: kind.emitter(),
+            actor,
             subject_id: subject_id.into(),
             subject_type,
             correlation_id: correlation_id.into(),
             causation_id: None,
             payload,
-            provenance: Provenance::now(kind.emitter(), origin),
+            provenance: Provenance::now(actor, origin),
         }
     }
 
@@ -329,6 +372,7 @@ mod tests {
 
     fn event(kind: EventKind, correlation: &str) -> Event {
         Event::new(
+            kind.emitters()[0],
             kind,
             "33333333-3333-4333-8333-333333333333",
             SubjectType::Genome,
@@ -359,20 +403,55 @@ mod tests {
     }
 
     #[test]
-    fn actor_is_fixed_by_the_kind_and_covers_all_three_components() {
+    fn actor_is_checked_against_the_kind_and_covers_all_four_components() {
         assert_eq!(
             event(EventKind::GenomeCommitted, "c").actor,
             Component::Adam
         );
         let emitters: std::collections::BTreeSet<&str> = EventKind::ALL
             .iter()
-            .map(|k| k.emitter().as_str())
+            .flat_map(|k| k.emitters())
+            .map(|c| c.as_str())
             .collect();
         assert_eq!(
             emitters,
-            ["adam", "axiom", "eve"]
+            ["adam", "axiom", "eve", "pcr"]
                 .into_iter()
                 .collect::<std::collections::BTreeSet<_>>()
+        );
+    }
+
+    #[test]
+    fn fitness_may_be_measured_by_either_evaluator_and_by_nobody_else() {
+        assert!(EventKind::FitnessMeasured.permits(Component::Eve));
+        assert!(EventKind::FitnessMeasured.permits(Component::Pcr));
+        assert!(!EventKind::FitnessMeasured.permits(Component::Adam));
+        assert!(!EventKind::FitnessMeasured.permits(Component::Axiom));
+    }
+
+    #[test]
+    fn a_run_event_belongs_to_exactly_one_evaluator() {
+        // The two run events are what a measurement chains back to, so
+        // confusing them would let a simulated run stand as evidence that real
+        // work happened.
+        assert_eq!(
+            EventKind::SimulationCompleted.emitters(),
+            &[Component::Eve]
+        );
+        assert_eq!(EventKind::TaskRunCompleted.emitters(), &[Component::Pcr]);
+    }
+
+    #[test]
+    #[should_panic(expected = "may not emit")]
+    fn an_event_cannot_claim_an_authorship_it_is_not_entitled_to() {
+        Event::new(
+            Component::Adam,
+            EventKind::FitnessMeasured,
+            "33333333-3333-4333-8333-333333333333",
+            SubjectType::Mutation,
+            "c",
+            BTreeMap::new(),
+            "adam:test",
         );
     }
 

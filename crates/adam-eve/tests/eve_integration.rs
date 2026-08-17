@@ -43,6 +43,9 @@ fn client(provider: Cp1Subprocess) -> EveClient {
         // per measurement in production and takes minutes.
         scenario_ids: vec!["excellent".to_string()],
         trials: 1,
+        // Derived, as in production when no caller pins one. The seed the
+        // request actually ran at is asserted below against `derive_seed`.
+        seed: None,
     })
 }
 
@@ -89,7 +92,7 @@ fn adam_measures_a_real_mutation_through_the_real_eve() {
     // Authored by EVE, about this proposal, over a symmetric comparison.
     assert_eq!(result.provenance.authored_by, Component::Eve);
     assert_eq!(result.mutation_id, proposal.id.to_string());
-    assert!(result.is_authentic(&proposal.id.to_string()));
+    assert!(result.is_authentic(&proposal.id.to_string(), Component::Eve));
 
     // A real measurement actually ran.
     assert!(result.baseline.runs >= 1);
@@ -160,4 +163,83 @@ fn eve_declines_to_score_a_mutation_it_cannot_measure() {
     );
     assert_eq!(result.delta_bp.raw(), 0);
     assert_eq!(result.baseline, result.candidate);
+}
+
+/// The exact mutation PCR measured in the real workspace, so the two
+/// evaluators can be quoted against the same change rather than against two
+/// different ones.
+fn policy_proposal() -> EvolutionProposal {
+    EvolutionProposal::new(
+        ProposalKind::AmendGenome {
+            field: "policies.append".to_string(),
+            current_value: String::new(),
+            suggested_value: "verify records before processing them".to_string(),
+        },
+        "records with no separator were processed as if they were well formed",
+        vec!["1 of 4 records was malformed and processed anyway".to_string()],
+        0.8,
+    )
+}
+
+/// Re-measure the policy amendment that PCR scores at +2500 bp.
+///
+/// This exists because a number quoted from an earlier session is not a
+/// measurement — it is a memory of one. The comparison between PCR and EVE is
+/// the central Genesis result, so the EVE side of it has to be reproducible on
+/// demand rather than carried forward.
+///
+/// Run with `--nocapture` to read the figures; the assertions here deliberately
+/// check only the properties that must hold, not the value itself. Pinning the
+/// value would turn a measurement into a regression test and invite somebody to
+/// edit the expectation when the engine legitimately changes.
+#[test]
+fn the_policy_amendment_pcr_approves_is_measured_by_eve_on_demand() {
+    let Some(provider) = endpoint() else {
+        eprintln!("skipping: set ADAM_EVE_CP1 to a built EVE checkout's bin/eve-cp1.js");
+        return;
+    };
+
+    let proposal = policy_proposal();
+    let result = EveClient::new(Box::new(provider))
+        .with_config(ValidationConfig {
+            // Empty means EVE's own default suite — the three benchmark apps,
+            // which is the configuration the original figure was taken under.
+            scenario_ids: vec![],
+            trials: 3,
+            seed: None,
+        })
+        .validate(&proposal, "genome-before", "genome-after")
+        .expect("EVE should answer a well-formed request");
+
+    eprintln!(
+        "EVE re-measurement: baseline={} bp candidate={} bp delta={} bp runs={}/{} rec={:?}\n  reason: {}",
+        result.baseline.composite_bp.raw(),
+        result.candidate.composite_bp.raw(),
+        result.delta_bp.raw(),
+        result.baseline.runs,
+        result.candidate.runs,
+        result.recommendation,
+        result.reason,
+    );
+
+    // EVE authored it, about this mutation, over a symmetric comparison.
+    assert_eq!(result.provenance.authored_by, Component::Eve);
+    assert!(result.is_authentic(&proposal.id.to_string(), Component::Eve));
+    assert_eq!(result.candidate.runs, result.baseline.runs);
+    assert!(result.baseline.runs >= 1, "a real measurement must have run");
+
+    // "verify" is a projectable policy keyword, so EVE must not decline here.
+    // If it does, the projection table changed and the comparison in
+    // REAL_VS_EVE_COMPARISON.md no longer has an EVE side at all.
+    assert!(
+        !result.reason.contains("not measurable by simulation"),
+        "EVE declined to measure a policy it has a projection for: {}",
+        result.reason
+    );
+    assert_eq!(
+        result.delta_bp.raw(),
+        i32::from(result.candidate.composite_bp.raw())
+            - i32::from(result.baseline.composite_bp.raw()),
+        "delta must equal candidate minus baseline"
+    );
 }

@@ -20,3 +20,6 @@ serde_json = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+adam-eventlog = { path = "../adam-eventlog" }

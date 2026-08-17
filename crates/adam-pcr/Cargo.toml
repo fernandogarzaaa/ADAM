@@ -1,0 +1,34 @@
+[package]
+name = "adam-pcr"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The organism's boundary with the world outside itself: one real environment, and the connector that turns what happens there into observations ADAM can hold"
+
+# A crate, deliberately not a repository. A separate trust domain needs either a
+# second consumer or a security boundary to justify it, and this has neither.
+[dependencies]
+adam-eve = { path = "../adam-eve" }
+adam-kernel = { path = "../adam-kernel" }
+adam-memory = { path = "../adam-memory" }
+adam-organism = { path = "../adam-organism" }
+adam-protocol = { path = "../adam-protocol" }
+thiserror.workspace = true
+uuid = { workspace = true }
+
+[dev-dependencies]
+adam-eve = { path = "../adam-eve" }
+adam-eventlog = { path = "../adam-eventlog" }
+adam-evolution = { path = "../adam-evolution" }
+# Integration tests link the crate from outside, so its normal dependencies are
+# not in scope for them. These two are repeated here because the fitness tests
+# build the genome and apply the amendment themselves.
+adam-kernel = { path = "../adam-kernel" }
+adam-organism = { path = "../adam-organism" }
+adam-protocol = { path = "../adam-protocol" }
+# For the tamper tests: they must attack the store the way an outsider would,
+# through a second connection, not through the API that enforces the rules.
+rusqlite.workspace = true
+serde_json.workspace = true

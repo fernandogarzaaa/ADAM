@@ -1,3 +1,15 @@
 /target
 Cargo.lock.bak
 *.pdb
+
+# The organism's live state. This is one operator's identity, memories and
+# beliefs — runtime data, not source, and not anybody else's to read. A fresh
+# checkout creates its own on first run; see ADAM_MEMORY_PATH / ADAM_GENOME_PATH.
+adam_memory.db
+adam_memory.db-*
+adam_genome.json
+*.sqlite
+*.sqlite-*
+
+# Local machine configuration.
+.claude/settings.local.json

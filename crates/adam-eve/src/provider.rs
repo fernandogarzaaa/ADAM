@@ -15,7 +15,9 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use adam_protocol::{EnvelopeError, FitnessResult, SignedEnvelope, ValidationRequest};
+use adam_protocol::{
+    Component, EnvelopeError, FitnessResult, SignedEnvelope, ValidationRequest,
+};
 
 /// Why a fitness measurement could not be obtained.
 ///
@@ -100,7 +102,15 @@ pub trait FitnessProvider: Send + Sync {
     /// The provider's identity, for error messages and audit entries.
     fn describe(&self) -> String;
 
-    /// Measure `request`, returning EVE's verdict.
+    /// Which component this provider's measurements are authored by.
+    ///
+    /// Declared by the provider and then *checked against the document it
+    /// returns*, which is what makes it more than a label: a provider claiming
+    /// to be EVE while returning a PCR-authored result fails verification, and
+    /// so does one that names a component which may not author evidence at all.
+    fn evaluator(&self) -> Component;
+
+    /// Measure `request`, returning the evaluator's verdict.
     fn measure(&self, request: &ValidationRequest) -> Result<FitnessResult, FitnessError>;
 }
 
@@ -109,12 +119,16 @@ pub trait FitnessProvider: Send + Sync {
 /// The check is applied here, once, rather than inside each provider: a
 /// provider that skipped it would silently reintroduce self-scored evidence,
 /// and that is exactly the failure mode CP/1 exists to close.
+///
+/// This is also the only place that knows both who was asked and who answered,
+/// so it is where those two have to be compared. Neither the provider nor the
+/// document can make that comparison alone.
 pub fn measure_and_verify(
     provider: &dyn FitnessProvider,
     request: &ValidationRequest,
 ) -> Result<FitnessResult, FitnessError> {
     let result = provider.measure(request)?;
-    match result.authenticity_failure(&request.mutation.id) {
+    match result.authenticity_failure(&request.mutation.id, provider.evaluator()) {
         None => Ok(result),
         Some(detail) => Err(FitnessError::Inauthentic {
             detail: format!("{detail} (provider: {})", provider.describe()),
@@ -191,6 +205,10 @@ impl FitnessProvider for Cp1Subprocess {
         } else {
             format!("{} {}", self.command, self.args.join(" "))
         }
+    }
+
+    fn evaluator(&self) -> Component {
+        Component::Eve
     }
 
     fn measure(&self, request: &ValidationRequest) -> Result<FitnessResult, FitnessError> {
@@ -341,23 +359,43 @@ impl Cp1Subprocess {
 /// stack trace or an audit entry.
 pub struct StubProvider {
     result: Result<FitnessResult, String>,
+    evaluator: Component,
 }
 
 impl StubProvider {
     pub fn returning(result: FitnessResult) -> Self {
-        Self { result: Ok(result) }
+        Self {
+            result: Ok(result),
+            evaluator: Component::Eve,
+        }
     }
 
     pub fn failing(detail: impl Into<String>) -> Self {
         Self {
             result: Err(detail.into()),
+            evaluator: Component::Eve,
         }
+    }
+
+    /// Stand in for an evaluator other than EVE.
+    ///
+    /// Defaulting to EVE keeps every existing test unchanged; a test that cares
+    /// which evaluator was asked says so here. Note that this sets who the
+    /// request was sent *to*, not who authored the prepared result — the two
+    /// disagreeing is precisely what [`measure_and_verify`] must catch.
+    pub fn as_evaluator(mut self, evaluator: Component) -> Self {
+        self.evaluator = evaluator;
+        self
     }
 }
 
 impl FitnessProvider for StubProvider {
     fn describe(&self) -> String {
         "stub (test double)".to_string()
+    }
+
+    fn evaluator(&self) -> Component {
+        self.evaluator
     }
 
     fn measure(&self, _request: &ValidationRequest) -> Result<FitnessResult, FitnessError> {

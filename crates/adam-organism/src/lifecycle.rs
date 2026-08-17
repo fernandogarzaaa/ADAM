@@ -366,14 +366,14 @@ mod tests {
     /// simulation's outcome, neither of which is what a lifecycle test should
     /// be sensitive to.
     fn stub_eve(proposal_id: ProposalId, recommendation: Recommendation) -> adam_eve::EveClient {
-        let measurement = Measurement {
-            composite_bp: BasisPoints::from_ratio(0.7),
-            task_success_bp: BasisPoints::from_ratio(0.7),
-            frustration_bp: BasisPoints::from_ratio(0.3),
-            trust_bp: BasisPoints::from_ratio(0.6),
-            cognitive_load_bp: BasisPoints::from_ratio(0.4),
-            runs: 9,
-        };
+        let measurement = Measurement::experience(
+            BasisPoints::from_ratio(0.7),
+            BasisPoints::from_ratio(0.7),
+            BasisPoints::from_ratio(0.3),
+            BasisPoints::from_ratio(0.6),
+            BasisPoints::from_ratio(0.4),
+            9,
+        );
         adam_eve::EveClient::new(Box::new(adam_eve::StubProvider::returning(
             adam_eve::FitnessResult {
                 cp: "cp1".to_string(),

@@ -2,7 +2,9 @@
 //!
 //! ADAM, EVE and AXIOM-AETHER are one organism. CP/1 is the stable wire
 //! contract between them: twelve canonical types each with exactly one owning
-//! repository, a closed set of fourteen events, mandatory chained provenance,
+//! repository (`FitnessResult` excepted — two evaluators may author it, and
+//! neither of them is ADAM), a closed set of fifteen events, mandatory chained
+//! provenance,
 //! and a canonical byte encoding with no floating point on the wire.
 //!
 //! # Vendored, not depended on
@@ -80,7 +82,7 @@ pub const CP: &str = "cp1";
 ///
 /// Kept in step with the vendored `protocol/cp1/VERSION` by
 /// [`tests::version_matches_the_vendored_source`].
-pub const VERSION: &str = "1.0.0";
+pub const VERSION: &str = "1.1.0";
 
 pub use canonical::{content_hash, seal, to_canonical, verify_seal, CanonicalError};
 pub use envelope::{EnvelopeError, SignedEnvelope};

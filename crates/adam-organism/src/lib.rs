@@ -30,7 +30,8 @@ mod organism;
 pub use embedding::embed;
 pub use lifecycle::{LifecycleConfig, LifecycleDriver, MutationOutcome, Observation, TurnReport};
 pub use organism::{
-    new_correlation_id, AppliedEffect, CorrelationId, Organism, OrganismError, ReflectionSummary,
+    apply_list_amendment, new_correlation_id, AppliedEffect, CorrelationId, Organism,
+    OrganismError, ReflectionSummary,
 };
 
 #[cfg(test)]
@@ -436,13 +437,15 @@ mod tests {
         author: adam_protocol::Component,
     ) -> adam_eve::EveClient {
         use adam_protocol::{BasisPoints, Measurement, Provenance, SignedBasisPoints};
-        let measurement = |composite: f64| Measurement {
-            composite_bp: BasisPoints::from_ratio(composite),
-            task_success_bp: BasisPoints::from_ratio(composite),
-            frustration_bp: BasisPoints::from_ratio(0.3),
-            trust_bp: BasisPoints::from_ratio(0.6),
-            cognitive_load_bp: BasisPoints::from_ratio(0.4),
-            runs: 9,
+        let measurement = |composite: f64| {
+            Measurement::experience(
+                BasisPoints::from_ratio(composite),
+                BasisPoints::from_ratio(composite),
+                BasisPoints::from_ratio(0.3),
+                BasisPoints::from_ratio(0.6),
+                BasisPoints::from_ratio(0.4),
+                9,
+            )
         };
         let result = adam_eve::FitnessResult {
             cp: "cp1".to_string(),
@@ -561,7 +564,10 @@ mod tests {
 
         let err = organism.validate_mutation(id, "turn").unwrap_err();
         assert!(matches!(err, OrganismError::Fitness(_)));
-        assert!(err.to_string().contains("only EVE may author"));
+        assert!(
+            err.to_string().contains("is not an evaluator"),
+            "unexpected reason: {err}"
+        );
 
         let err = organism.accept_mutation(id, "turn").unwrap_err();
         assert!(matches!(err, OrganismError::EveApprovalRequired { .. }));

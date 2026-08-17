@@ -21,13 +21,29 @@ use adam_protocol::{
 
 use crate::provider::{measure_and_verify, FitnessError, FitnessProvider};
 
-/// How a mutation is measured: against which scenarios, how many times.
+/// How a mutation is measured: against which scenarios, how many times, and at
+/// which seed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidationConfig {
     /// EVE scenario ids. Empty means EVE's default suite.
     pub scenario_ids: Vec<String>,
     /// Repetitions per persona per scenario.
     pub trials: u32,
+    /// The seed to measure at, when the caller has one.
+    ///
+    /// `None` derives a seed from the mutation id and the genome hash, which is
+    /// reproducible for one *proposal object* but not across proposals: an
+    /// `EvolutionProposal` takes a fresh uuid at construction, so proposing the
+    /// same logical change twice yields two ids and therefore two seeds. A
+    /// repeated experiment then quietly runs at a different seed, and the
+    /// difference between the two answers cannot be attributed — it may be the
+    /// mutation, or it may be the seed.
+    ///
+    /// Set this whenever two measurements are meant to be comparable. The value
+    /// actually used is recorded on the request either way
+    /// (`MeasurementPlan::seed`), so which seed a measurement ran at is never a
+    /// matter of reconstruction.
+    pub seed: Option<u32>,
 }
 
 impl Default for ValidationConfig {
@@ -46,6 +62,9 @@ impl Default for ValidationConfig {
             // measurement that already runs a full browser simulation for every
             // repetition.
             trials: 3,
+            // Derive by default: a caller who has not thought about seeds still
+            // gets a reproducible measurement for the proposal in hand.
+            seed: None,
         }
     }
 }
@@ -181,6 +200,13 @@ impl EveClient {
     ///
     /// Separate from [`EveClient::validate`] so the exact question ADAM asks is
     /// inspectable and testable without a provider running.
+    ///
+    /// The seed comes from [`ValidationConfig::seed`] when the caller supplied
+    /// one, and is derived otherwise. Either way it is written to the request's
+    /// [`MeasurementPlan`] *and* named in provenance evidence, so a reader of
+    /// the request never has to recompute which experiment was run — and two
+    /// requests that claim to be the same experiment can be compared on the
+    /// point that decides whether they are.
     pub fn request_for(
         &self,
         proposal: &EvolutionProposal,
@@ -188,7 +214,10 @@ impl EveClient {
         genome_after_hash: &str,
     ) -> ValidationRequest {
         let mutation = to_mutation(proposal);
-        let seed = derive_seed(&mutation.id, genome_before_hash);
+        let (seed, origin) = match self.config.seed {
+            Some(seed) => (seed, "supplied"),
+            None => (derive_seed(&mutation.id, genome_before_hash), "derived"),
+        };
         ValidationRequest::new(
             uuid::Uuid::new_v4().to_string(),
             mutation,
@@ -199,7 +228,8 @@ impl EveClient {
                 trials: self.config.trials,
             },
             Provenance::now(Component::Adam, "adam:evolution/validate")
-                .derived_from([proposal.id.to_string()]),
+                .derived_from([proposal.id.to_string()])
+                .with_evidence([format!("seed={seed} ({origin})")]),
         )
     }
 
@@ -248,15 +278,60 @@ mod tests {
         )
     }
 
+    fn client_seeded(seed: Option<u32>) -> EveClient {
+        EveClient::new(Box::new(crate::provider::StubProvider::failing("unused"))).with_config(
+            ValidationConfig {
+                seed,
+                ..ValidationConfig::default()
+            },
+        )
+    }
+
+    /// The confound itself, demonstrated rather than asserted.
+    ///
+    /// Two proposals of the *same logical change* are two objects with two
+    /// uuids, so a derived seed differs between them. Nothing warns the caller:
+    /// the two measurements simply run different experiments, and the gap
+    /// between their answers is unattributable.
+    #[test]
+    fn a_derived_seed_differs_between_two_proposals_of_the_same_change() {
+        let a = client_seeded(None).request_for(&amend("preferences.x"), "before", "after");
+        let b = client_seeded(None).request_for(&amend("preferences.x"), "before", "after");
+        assert_ne!(a.seed, b.seed);
+    }
+
+    #[test]
+    fn an_explicit_seed_makes_two_proposals_of_the_same_change_comparable() {
+        let a = client_seeded(Some(4242)).request_for(&amend("preferences.x"), "before", "after");
+        let b = client_seeded(Some(4242)).request_for(&amend("preferences.x"), "before", "after");
+        assert_eq!(a.seed, 4242);
+        assert_eq!(a.seed, b.seed);
+    }
+
+    /// Recorded, not reconstructable: a reader must be able to see which seed
+    /// ran and whether anyone chose it, without recomputing anything.
+    #[test]
+    fn the_seed_and_its_origin_are_persisted_in_provenance() {
+        let supplied = client_seeded(Some(7)).request_for(&retire(), "before", "after");
+        assert!(supplied
+            .provenance
+            .evidence
+            .contains(&"seed=7 (supplied)".to_string()));
+
+        let derived = client_seeded(None).request_for(&retire(), "before", "after");
+        let expected = format!("seed={} (derived)", derived.seed);
+        assert!(derived.provenance.evidence.contains(&expected));
+    }
+
     fn measurement(runs: u32) -> Measurement {
-        Measurement {
-            composite_bp: BasisPoints::from_ratio(0.64),
-            task_success_bp: BasisPoints::from_ratio(0.7),
-            frustration_bp: BasisPoints::from_ratio(0.3),
-            trust_bp: BasisPoints::from_ratio(0.6),
-            cognitive_load_bp: BasisPoints::from_ratio(0.4),
+        Measurement::experience(
+            BasisPoints::from_ratio(0.64),
+            BasisPoints::from_ratio(0.7),
+            BasisPoints::from_ratio(0.3),
+            BasisPoints::from_ratio(0.6),
+            BasisPoints::from_ratio(0.4),
             runs,
-        }
+        )
     }
 
     pub(crate) fn fitness_for(mutation_id: &str, author: Component) -> FitnessResult {
@@ -410,7 +485,13 @@ mod tests {
         )));
         let err = client.validate(&proposal, "b", "a").unwrap_err();
         assert!(matches!(err, FitnessError::Inauthentic { .. }));
-        assert!(err.to_string().contains("only EVE may author"));
+        // Rejected for *being ADAM*, not for failing to be EVE: the rule now
+        // admits a second evaluator, and this test must keep failing for the
+        // reason that still matters after that generalization.
+        assert!(
+            err.to_string().contains("is not an evaluator"),
+            "unexpected reason: {err}"
+        );
     }
 
     #[test]

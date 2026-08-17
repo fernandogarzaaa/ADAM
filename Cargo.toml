@@ -3,12 +3,14 @@ resolver = "2"
 members = [
     "crates/adam-kernel",
     "crates/adam-protocol",
+    "crates/adam-eventlog",
     "crates/adam-memory",
     "crates/adam-skills",
     "crates/adam-beliefs",
     "crates/adam-evolution",
     "crates/adam-eve",
     "crates/adam-organism",
+    "crates/adam-pcr",
     "crates/adam-mcp",
     "crates/adam-governance",
 ]
