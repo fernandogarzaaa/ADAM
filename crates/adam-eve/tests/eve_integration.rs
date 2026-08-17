@@ -226,7 +226,10 @@ fn the_policy_amendment_pcr_approves_is_measured_by_eve_on_demand() {
     assert_eq!(result.provenance.authored_by, Component::Eve);
     assert!(result.is_authentic(&proposal.id.to_string(), Component::Eve));
     assert_eq!(result.candidate.runs, result.baseline.runs);
-    assert!(result.baseline.runs >= 1, "a real measurement must have run");
+    assert!(
+        result.baseline.runs >= 1,
+        "a real measurement must have run"
+    );
 
     // "verify" is a projectable policy keyword, so EVE must not decline here.
     // If it does, the projection table changed and the comparison in

@@ -24,7 +24,10 @@ use adam_protocol::{Component, Event, EventKind, PayloadValue, SubjectType};
 const RECORDS: &[(&str, &str)] = &[
     ("01-alpha.rec", "name=alpha\ncount=3\n"),
     ("02-bravo.rec", "name=bravo\ncount=1\n"),
-    ("03-charlie.rec", "name=charlie\nthis line has no separator\n"),
+    (
+        "03-charlie.rec",
+        "name=charlie\nthis line has no separator\n",
+    ),
     ("04-delta.rec", "name=delta\ncount=7\n"),
 ];
 
@@ -180,7 +183,10 @@ fn stored_events_refuse_to_be_edited_or_deleted() {
 
     // Through a second connection, as an attacker with file access would.
     let conn = rusqlite::Connection::open(&path).expect("connect");
-    let update = conn.execute("UPDATE events SET payload = '{}' WHERE id = ?1", [&event.id]);
+    let update = conn.execute(
+        "UPDATE events SET payload = '{}' WHERE id = ?1",
+        [&event.id],
+    );
     let delete = conn.execute("DELETE FROM events WHERE id = ?1", [&event.id]);
 
     assert!(update.is_err(), "UPDATE must be refused");
@@ -210,7 +216,9 @@ fn a_stored_document_still_hashes_to_what_it_claims() {
     let resealed = parsed.seal().expect("seal");
 
     assert_eq!(
-        resealed["provenance"]["content_hash"].as_str().expect("hash"),
+        resealed["provenance"]["content_hash"]
+            .as_str()
+            .expect("hash"),
         stored.content_hash,
         "the row's hash must match the document it sits beside"
     );

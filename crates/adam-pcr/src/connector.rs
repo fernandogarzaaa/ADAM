@@ -164,7 +164,9 @@ mod tests {
     #[test]
     fn an_unrelated_policy_changes_nothing() {
         let mut genome = Genome::new("probe", "with a policy");
-        genome.policies.push("prefer short explanations".to_string());
+        genome
+            .policies
+            .push("prefer short explanations".to_string());
         assert_eq!(
             action_for(&genome),
             Action::ProcessAll,

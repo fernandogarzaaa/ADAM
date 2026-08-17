@@ -21,7 +21,10 @@ use adam_protocol::{BasisPoints, Component, Provenance, SignedBasisPoints};
 const RECORDS: &[(&str, &str)] = &[
     ("01-alpha.rec", "name=alpha\ncount=3\n"),
     ("02-bravo.rec", "name=bravo\ncount=1\n"),
-    ("03-charlie.rec", "name=charlie\nthis line has no separator\n"),
+    (
+        "03-charlie.rec",
+        "name=charlie\nthis line has no separator\n",
+    ),
     ("04-delta.rec", "name=delta\ncount=7\n"),
 ];
 
@@ -362,7 +365,9 @@ fn a_failed_environment_action_records_no_observation() {
 fn a_failed_evaluation_leaves_the_organism_where_it_was() {
     let scratch = Scratch::new("evefail");
     let mut turn = up_to_the_decision(&scratch, |_| {
-        EveClient::new(Box::new(StubProvider::failing("eve exited before answering")))
+        EveClient::new(Box::new(StubProvider::failing(
+            "eve exited before answering",
+        )))
     });
 
     assert!(turn

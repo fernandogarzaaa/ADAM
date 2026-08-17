@@ -28,7 +28,10 @@ use adam_protocol::{BasisPoints, Component, Provenance, SignedBasisPoints};
 const RECORDS: &[(&str, &str)] = &[
     ("01-alpha.rec", "name=alpha\ncount=3\n"),
     ("02-bravo.rec", "name=bravo\ncount=1\n"),
-    ("03-charlie.rec", "name=charlie\nthis line has no separator\n"),
+    (
+        "03-charlie.rec",
+        "name=charlie\nthis line has no separator\n",
+    ),
     ("04-delta.rec", "name=delta\ncount=7\n"),
 ];
 

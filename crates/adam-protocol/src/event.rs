@@ -434,10 +434,7 @@ mod tests {
         // The two run events are what a measurement chains back to, so
         // confusing them would let a simulated run stand as evidence that real
         // work happened.
-        assert_eq!(
-            EventKind::SimulationCompleted.emitters(),
-            &[Component::Eve]
-        );
+        assert_eq!(EventKind::SimulationCompleted.emitters(), &[Component::Eve]);
         assert_eq!(EventKind::TaskRunCompleted.emitters(), &[Component::Pcr]);
     }
 

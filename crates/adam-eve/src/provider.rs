@@ -15,9 +15,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use adam_protocol::{
-    Component, EnvelopeError, FitnessResult, SignedEnvelope, ValidationRequest,
-};
+use adam_protocol::{Component, EnvelopeError, FitnessResult, SignedEnvelope, ValidationRequest};
 
 /// Why a fitness measurement could not be obtained.
 ///

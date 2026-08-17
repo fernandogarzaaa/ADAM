@@ -99,7 +99,8 @@ impl SqliteEventLog {
         // synchronous so an event `append` returned from has actually reached
         // the disk — surviving process termination is the point of the crate.
         // Both are no-ops for ":memory:".
-        let _: String = conn.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))?;
+        let _: String =
+            conn.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))?;
         conn.pragma_update(None, "synchronous", "FULL")?;
         let log = Self {
             conn: Mutex::new(conn),

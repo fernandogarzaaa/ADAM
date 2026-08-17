@@ -280,7 +280,8 @@ impl FitnessProvider for RealTaskFitnessProvider<'_> {
 
         let mutation_id = request.mutation.id.as_str();
         let baseline = self.run_side("baseline", &self.baseline, request.trials, mutation_id)?;
-        let candidate = self.run_side("candidate", &candidate_genome, request.trials, mutation_id)?;
+        let candidate =
+            self.run_side("candidate", &candidate_genome, request.trials, mutation_id)?;
 
         // Both sides ran `request.trials` times by construction. Asserting it
         // here anyway keeps the invariant local to the place that would break

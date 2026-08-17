@@ -17,14 +17,17 @@ use adam_organism::apply_list_amendment;
 use adam_pcr::{action_for, Action, RealTaskFitnessProvider};
 use adam_protocol::{
     BasisPoints, Component, EventKind, GenomePair, MeasurementPlan, Mutation, MutationKind,
-    MutationStatus, Provenance, RecordingSink, Recommendation, ValidationRequest,
+    MutationStatus, Provenance, Recommendation, RecordingSink, ValidationRequest,
 };
 
 /// The same four records the direct experiment used, third one malformed.
 const RECORDS: &[(&str, &str)] = &[
     ("01-alpha.rec", "name=alpha\ncount=3\n"),
     ("02-bravo.rec", "name=bravo\ncount=1\n"),
-    ("03-charlie.rec", "name=charlie\nthis line has no separator\n"),
+    (
+        "03-charlie.rec",
+        "name=charlie\nthis line has no separator\n",
+    ),
     ("04-delta.rec", "name=delta\ncount=7\n"),
 ];
 
@@ -175,7 +178,9 @@ fn every_run_is_announced_by_pcr_and_chained_to_the_measurement() {
         4,
         "two trials on each side of the counterfactual"
     );
-    assert!(kinds.iter().all(|kind| *kind == EventKind::TaskRunCompleted));
+    assert!(kinds
+        .iter()
+        .all(|kind| *kind == EventKind::TaskRunCompleted));
     assert!(sink.events().iter().all(|e| e.actor == Component::Pcr));
 
     // A measured result must name the runs behind it. Without this the numbers

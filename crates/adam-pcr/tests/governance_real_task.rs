@@ -16,12 +16,15 @@ use adam_evolution::{EvolutionProposal, ProposalKind};
 use adam_kernel::Genome;
 use adam_organism::Organism;
 use adam_pcr::RealTaskFitnessProvider;
-use adam_protocol::{Component, EventKind, RecordingSink, Recommendation};
+use adam_protocol::{Component, EventKind, Recommendation, RecordingSink};
 
 const RECORDS: &[(&str, &str)] = &[
     ("01-alpha.rec", "name=alpha\ncount=3\n"),
     ("02-bravo.rec", "name=bravo\ncount=1\n"),
-    ("03-charlie.rec", "name=charlie\nthis line has no separator\n"),
+    (
+        "03-charlie.rec",
+        "name=charlie\nthis line has no separator\n",
+    ),
     ("04-delta.rec", "name=delta\ncount=7\n"),
 ];
 
@@ -137,7 +140,9 @@ fn the_fitness_event_names_pcr_as_the_measurer_not_eve() {
     let mut organism = organism_on_the_workspace(&scratch, sink.clone());
 
     let id = organism.propose_mutation(proposal());
-    organism.validate_mutation(id, "turn-1").expect("measurable");
+    organism
+        .validate_mutation(id, "turn-1")
+        .expect("measurable");
 
     let fitness: Vec<_> = sink
         .events()
@@ -185,7 +190,9 @@ fn real_evidence_draws_on_the_same_allowance_as_every_other_acceptance() {
     let mut organism = organism_on_the_workspace(&scratch, sink);
 
     let id = organism.propose_mutation(proposal());
-    organism.validate_mutation(id, "turn-1").expect("measurable");
+    organism
+        .validate_mutation(id, "turn-1")
+        .expect("measurable");
     organism
         .accept_mutation(id, "turn-1")
         .expect("the first acceptance is within the allowance");

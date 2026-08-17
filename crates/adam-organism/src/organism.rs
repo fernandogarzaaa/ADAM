@@ -13,9 +13,7 @@ use adam_evolution::{
 use adam_governance::{AuditEntry, EvolutionLimits, GovernanceError, GovernanceGate};
 use adam_kernel::{Genome, GenomeDiff, GenomeError, GenomeHistory, GenomeVersion, VersionId};
 use adam_memory::{MemoryError, MemoryId, MemoryKind, MemoryRecord, MemoryStore, Provenance};
-use adam_protocol::{
-    Component, Event, EventKind, EventSink, NullSink, PayloadValue, SubjectType,
-};
+use adam_protocol::{Component, Event, EventKind, EventSink, NullSink, PayloadValue, SubjectType};
 use adam_skills::{Skill, SkillRegistry};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
