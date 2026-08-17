@@ -288,6 +288,7 @@ impl Organism {
     /// and then becomes the chain's newest link. An unknown chain simply
     /// produces an event with no `causation_id` — a missing edge is honest,
     /// whereas a guessed one would make the audit trail worthless.
+    #[allow(clippy::too_many_arguments)] // private helper; each param names a distinct event field, not a bundle worth a struct
     fn emit_in_chain(
         &self,
         actor: Component,
