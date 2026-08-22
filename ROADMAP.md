@@ -73,14 +73,3 @@ These are explicitly out of scope for this PR and are natural next steps:
   export/import CLI yet for moving an organism's full state between LLM
   backends. The MCP server itself is the practical migration path today
   (point a new client at the same `ADAM_MEMORY_PATH` and genome store).
-- **Verified (not self-reported) EVE trial outcomes.** `adam_propose_mutation`
-  action `evaluate` (`propose_mutation_evaluate` in
-  `crates/adam-mcp/src/dispatch.rs`) takes the calling MCP client's
-  reported `TrialOutcome`s at face value — there is no in-process sandbox
-  reachable over JSON-RPC to independently re-run the trials, so the
-  server cannot distinguish an honest client from a malicious or buggy one
-  that fabricates passing outcomes to talk the EVE gate into approving a
-  genome mutation it never actually validated. Closing this gap needs a
-  verifiable trial-execution protocol (e.g. signed/replayable trial
-  transcripts, or a server-side sandbox callback), which is out of scope
-  for this pass.
