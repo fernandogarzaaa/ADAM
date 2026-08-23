@@ -15,6 +15,8 @@ pub enum MemoryError {
     Serialization(#[from] serde_json::Error),
     #[error("memory {0} not found")]
     NotFound(MemoryId),
+    #[error("corrupt stored data: {0}")]
+    Corrupt(String),
 }
 
 /// Durable store for ADAM's episodic, semantic, procedural, and self
@@ -189,8 +191,10 @@ pub(crate) fn encode_embedding(embedding: &[f32]) -> Vec<u8> {
 
 pub(crate) fn decode_embedding(bytes: &[u8]) -> Vec<f32> {
     bytes
-        .chunks_exact(4)
-        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|chunk| f32::from_le_bytes(*chunk))
         .collect()
 }
 
@@ -210,8 +214,12 @@ pub(crate) fn row_to_record(row: &Row) -> rusqlite::Result<Result<MemoryRecord, 
         let superseded_by: Option<String> = row.get(11)?;
 
         Ok(MemoryRecord {
-            id: id.parse().expect("stored id is always a valid UUID"),
-            kind: MemoryKind::parse(&kind).expect("stored kind is always valid"),
+            id: id.parse().map_err(|e| {
+                MemoryError::Corrupt(format!("stored id '{id}' is not a valid UUID: {e}"))
+            })?,
+            kind: MemoryKind::parse(&kind).ok_or_else(|| {
+                MemoryError::Corrupt(format!("stored kind '{kind}' is not valid"))
+            })?,
             content,
             embedding: decode_embedding(&embedding),
             confidence,
@@ -219,18 +227,112 @@ pub(crate) fn row_to_record(row: &Row) -> rusqlite::Result<Result<MemoryRecord, 
                 origin,
                 evidence: serde_json::from_str(&evidence)?,
             },
-            created_at: parse_rfc3339(&created_at),
-            last_accessed_at: parse_rfc3339(&last_accessed_at),
+            created_at: parse_rfc3339(&created_at)?,
+            last_accessed_at: parse_rfc3339(&last_accessed_at)?,
             access_count,
             decay_rate,
             superseded_by: superseded_by
-                .map(|s| s.parse().expect("stored id is always a valid UUID")),
+                .map(|s| {
+                    s.parse().map_err(|e| {
+                        MemoryError::Corrupt(format!("stored id '{s}' is not a valid UUID: {e}"))
+                    })
+                })
+                .transpose()?,
         })
     })())
 }
 
-fn parse_rfc3339(s: &str) -> DateTime<Utc> {
+fn parse_rfc3339(s: &str) -> Result<DateTime<Utc>, MemoryError> {
     DateTime::parse_from_rfc3339(s)
-        .expect("stored timestamps are always valid RFC3339")
-        .with_timezone(&Utc)
+        .map(|dt| dt.with_timezone(&Utc))
+        .map_err(|e| {
+            MemoryError::Corrupt(format!("stored timestamp '{s}' is not valid RFC3339: {e}"))
+        })
+}
+
+#[cfg(test)]
+mod corruption_tests {
+    use super::*;
+    use crate::record::{MemoryKind, MemoryRecord, Provenance};
+
+    fn record() -> MemoryRecord {
+        MemoryRecord::new(
+            MemoryKind::Semantic,
+            "a well-formed memory",
+            vec![0.1, 0.2],
+            0.7,
+            Provenance {
+                origin: "test".to_string(),
+                evidence: vec![],
+            },
+            0.0,
+        )
+    }
+
+    /// A hand-edited or incompatible-schema row with a non-UUID `id`
+    /// column must surface as a `MemoryError::Corrupt`, not panic the
+    /// process via an `.expect()` in the row-decoding path.
+    #[test]
+    fn reading_a_row_with_a_corrupt_id_returns_an_error_instead_of_panicking() {
+        let store = MemoryStore::open(":memory:").unwrap();
+        let good = record();
+        store.store(&good).unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE memories SET id = 'not-a-uuid' WHERE id = ?1",
+                params![good.id.to_string()],
+            )
+            .unwrap();
+
+        let err = store.all().unwrap_err();
+        assert!(
+            matches!(err, MemoryError::Corrupt(_)),
+            "expected MemoryError::Corrupt, got {err:?}"
+        );
+    }
+
+    /// Likewise for an out-of-band `kind` value that no longer matches any
+    /// `MemoryKind` variant (e.g. written by an incompatible future schema
+    /// version).
+    #[test]
+    fn reading_a_row_with_an_unknown_kind_returns_an_error_instead_of_panicking() {
+        let store = MemoryStore::open(":memory:").unwrap();
+        let good = record();
+        store.store(&good).unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE memories SET kind = 'not-a-real-kind' WHERE id = ?1",
+                params![good.id.to_string()],
+            )
+            .unwrap();
+
+        let err = store.get(good.id).unwrap_err();
+        assert!(
+            matches!(err, MemoryError::Corrupt(_)),
+            "expected MemoryError::Corrupt, got {err:?}"
+        );
+    }
+
+    /// And for a `created_at` timestamp that isn't valid RFC3339.
+    #[test]
+    fn reading_a_row_with_a_corrupt_timestamp_returns_an_error_instead_of_panicking() {
+        let store = MemoryStore::open(":memory:").unwrap();
+        let good = record();
+        store.store(&good).unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE memories SET created_at = 'not-a-timestamp' WHERE id = ?1",
+                params![good.id.to_string()],
+            )
+            .unwrap();
+
+        let err = store.get(good.id).unwrap_err();
+        assert!(
+            matches!(err, MemoryError::Corrupt(_)),
+            "expected MemoryError::Corrupt, got {err:?}"
+        );
+    }
 }

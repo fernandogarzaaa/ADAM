@@ -212,7 +212,8 @@ fn evolve(organism: &mut Organism, args: &Value) -> Result<Value, String> {
     let ids = if auto_requested {
         organism.evolve_auto().map_err(|e| e.to_string())?
     } else {
-        let signals: EvolutionSignals = serde_json::from_value(args.clone()).unwrap_or_default();
+        let signals: EvolutionSignals = serde_json::from_value(args.clone())
+            .map_err(|e| format!("invalid evolve args: {e}"))?;
         organism.evolve(&signals)
     };
 
@@ -323,5 +324,59 @@ fn history(organism: &mut Organism, args: &Value) -> Result<Value, String> {
             Ok(json!({ "new_version": new_version }))
         }
         other => Err(format!("unknown history action '{other}'")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use adam_organism::Organism;
+
+    fn ephemeral_organism() -> Organism {
+        Organism::new("ADAM", "test organism", ":memory:").expect("ephemeral organism")
+    }
+
+    #[test]
+    fn evolve_with_absent_args_falls_back_to_auto() {
+        let mut organism = ephemeral_organism();
+        // `args` is null (absent) -> genuinely "no signals provided" ->
+        // routes to evolve_auto(), not an error.
+        let result = call_tool(&mut organism, "adam_evolve", &Value::Null);
+        assert!(
+            result.is_ok(),
+            "expected auto-evolve to succeed: {result:?}"
+        );
+    }
+
+    #[test]
+    fn evolve_with_malformed_args_returns_descriptive_error_instead_of_silently_defaulting() {
+        let mut organism = ephemeral_organism();
+        // Present but malformed: `skill_failures` must be an array of
+        // SkillFailureSignal, not a string, so this cannot deserialize
+        // into `EvolutionSignals`. It must be rejected with a descriptive
+        // error, not silently treated as `EvolutionSignals::default()`.
+        let bad_args = json!({ "skill_failures": "not-an-array" });
+        let result = call_tool(&mut organism, "adam_evolve", &bad_args);
+        let err = result.expect_err("malformed evolve args must be rejected, not defaulted");
+        assert!(
+            err.contains("invalid evolve args"),
+            "error should describe the deserialization failure, got: {err}"
+        );
+    }
+
+    #[test]
+    fn evolve_with_valid_signals_is_accepted() {
+        let mut organism = ephemeral_organism();
+        let args = json!({
+            "skill_failures": [],
+            "belief_instabilities": [],
+            "recurring_conflicts": [],
+            "genome_drifts": []
+        });
+        let result = call_tool(&mut organism, "adam_evolve", &args);
+        assert!(
+            result.is_ok(),
+            "expected well-formed signals to succeed: {result:?}"
+        );
     }
 }
