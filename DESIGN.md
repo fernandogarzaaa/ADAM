@@ -25,17 +25,31 @@ direct consequence of the "no silent evolution" requirement — an
 organism that can quietly erase its own history could also quietly erase
 evidence of a bad decision.
 
-## Lightweight deterministic embeddings instead of an ML model
+## Real embeddings, isolated to one file
 
-`adam-organism::embed` is a 64-dimension bag-of-hashed-tokens vector, not
-a real embedding model. Pulling in an embedding runtime (ONNX, a hosted
-API, etc.) would add a large dependency surface and an external service
-dependency to a project whose acceptance criteria are about identity,
-memory, and governance semantics — not retrieval quality. The design
-isolates this choice to one function (`embedding.rs`) specifically so a
-real embedder can be swapped in later without touching `adam-memory`'s
-storage or retrieval logic, which already treats embeddings as opaque
-`Vec<f32>`.
+`adam-organism::embed` originally used a 64-dimension bag-of-hashed-tokens
+vector rather than a real embedding model, specifically so the choice
+could be isolated to one function (`embedding.rs`) and swapped later
+without touching `adam-memory`'s storage or retrieval logic — it already
+treats embeddings as opaque `Vec<f32>`.
+
+That swap has now happened: `embed` runs `all-MiniLM-L6-v2` locally
+through `fastembed`/`ort` (an ONNX Runtime session), rather than calling a
+hosted API. This was the deciding factor — a hosted embedding API would
+add a required API key, network calls on every memory store/query, and
+per-call cost/latency to a project whose acceptance criteria are about
+identity, memory, and governance semantics, not retrieval quality. A local
+ONNX model needs no key and no per-call network round-trip once its
+weights are cached (fetched from Hugging Face on first use, under
+`ADAM_EMBEDDING_CACHE_DIR`), at the cost of a larger dependency tree and a
+one-time model download.
+
+`embed` is fallible (`Result<Vec<f32>, EmbeddingError>`) rather than
+silently substituting a placeholder vector on model load or inference
+failure — consistent with this project's general preference for failing
+loudly over degrading unnoticed (see "Fitness is measured elsewhere, and
+ADAM checks that it was", below). `OrganismError::Embedding` propagates
+that failure to every `adam_memory_store`/`adam_memory_query` caller.
 
 ## `adam-evolution` never imports `adam-skills`/`adam-beliefs`/`adam-memory`
 

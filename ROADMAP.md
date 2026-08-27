@@ -61,13 +61,25 @@
   `Organism.evaluations` is pruned as proposals are accepted/rejected
   instead of growing unboundedly.
 
+## Shipped (follow-up, continued)
+
+- **Real embeddings.** `adam-organism::embed` now runs `all-MiniLM-L6-v2`
+  locally via `fastembed`/`ort` (an ONNX Runtime session), replacing the
+  hashed bag-of-tokens placeholder. `adam-memory`'s storage/retrieval API
+  needed no change — it already treats embeddings as opaque `Vec<f32>`.
+  The model is fetched from Hugging Face on first use and cached under
+  `ADAM_EMBEDDING_CACHE_DIR` (or `fastembed`'s own default cache dir);
+  `embed` is now fallible (`Result<Vec<f32>, EmbeddingError>`), and model
+  load/inference failure surfaces as `OrganismError::Embedding` rather than
+  silently degrading to a placeholder vector. The two tests that exercise
+  the real model are `#[ignore]`d by default so `cargo test --workspace`
+  stays hermetic; run them explicitly with `cargo test -p adam-organism --
+  --ignored` when the model is reachable.
+
 ## Not yet built
 
 These are explicitly out of scope for this PR and are natural next steps:
 
-- **Real embeddings.** Swap `adam-organism::embed`'s hashed bag-of-tokens
-  vector for a real embedding model, without changing `adam-memory`'s
-  storage/retrieval API (it already treats embeddings as opaque `Vec<f32>`).
 - **Cross-provider migration tooling.** The genome/memory/beliefs/skills
   are already provider-agnostic data, but there is no packaged
   export/import CLI yet for moving an organism's full state between LLM

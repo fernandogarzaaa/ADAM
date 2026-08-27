@@ -11,5 +11,9 @@ adam_genome.json
 *.sqlite
 *.sqlite-*
 
+# Cached ONNX embedding model weights (fastembed), fetched from Hugging Face
+# on first use. See ADAM_EMBEDDING_CACHE_DIR in crates/adam-organism/src/embedding.rs.
+.fastembed_cache/
+
 # Local machine configuration.
 .claude/settings.local.json
