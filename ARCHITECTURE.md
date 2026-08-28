@@ -119,6 +119,14 @@ Lifecycle-heavy tools (`adam_skills`, `adam_history`) use an `action`
 field to reach their full underlying capability without growing the tool
 count beyond the 12 specified names.
 
+The `initialize` response also carries an `instructions` field
+(`crates/adam-mcp/USAGE.md`, embedded via `include_str!`) describing when
+and how to use the `adam_*` tools. This is deliberately protocol-level
+rather than a Claude Code skill: any MCP-compliant client can surface
+`initialize.instructions` to its model, so this is what makes proactive
+ADAM use possible on a host with no skill-discovery system of its own
+(Codex, or any other MCP client), not just Claude Code.
+
 ### `adam-governance` (Phase 8)
 `GovernanceGate` is the single choke point every acceptance, rejection,
 and rollback passes through. It enforces a rolling-window evolution rate

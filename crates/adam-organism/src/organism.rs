@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use thiserror::Error;
 
-use crate::embedding::embed;
+use crate::embedding::{embed, EmbeddingError};
 
 /// Groups every event emitted while processing one developmental turn.
 ///
@@ -72,6 +72,8 @@ pub enum OrganismError {
     },
     #[error("failed to (de)serialize genome history: {0}")]
     GenomeSerialization(#[from] serde_json::Error),
+    #[error(transparent)]
+    Embedding(#[from] EmbeddingError),
 }
 
 /// The concrete, auditable outcome of applying an accepted proposal.
@@ -411,7 +413,7 @@ impl Organism {
         let record = MemoryRecord::new(
             kind,
             content,
-            embed(content),
+            embed(content)?,
             confidence,
             Provenance {
                 origin: origin.to_string(),
@@ -473,7 +475,7 @@ impl Organism {
         kind: Option<MemoryKind>,
         top_k: usize,
     ) -> Result<Vec<(MemoryRecord, f32)>, OrganismError> {
-        Ok(self.memory.query_similar(&embed(query), kind, top_k)?)
+        Ok(self.memory.query_similar(&embed(query)?, kind, top_k)?)
     }
 
     /// Approximate-nearest-neighbor counterpart to [`Organism::memory_query`],
@@ -495,7 +497,7 @@ impl Organism {
         top_k: usize,
     ) -> Result<Vec<(MemoryRecord, f32)>, OrganismError> {
         let index = self.memory.build_ann_index(kind)?;
-        let hits = index.query(&embed(query), top_k);
+        let hits = index.query(&embed(query)?, top_k);
         let mut records = Vec::with_capacity(hits.len());
         for (id, score) in hits {
             if let Some(record) = self.memory.get(id)? {

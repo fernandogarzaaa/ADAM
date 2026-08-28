@@ -19,7 +19,7 @@
   ],
   "mcpServers": {
     "adam": {
-      "command": "${CLAUDE_PLUGIN_ROOT}/target/release/adam-mcp",
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/adam-mcp",
       "args": []
     }
   }

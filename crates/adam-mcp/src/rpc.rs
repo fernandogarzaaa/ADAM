@@ -11,6 +11,15 @@ const PROTOCOL_VERSION: &str = "2024-11-05";
 const SERVER_NAME: &str = "adam-mcp";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Platform-neutral guidance on when and how to use the `adam_*` tools,
+/// sent as the MCP `initialize` response's `instructions` field. This is
+/// the "universal adapter": `instructions` is part of the MCP spec itself,
+/// so any compliant client (Claude Code, Codex, or anything else) can
+/// surface it to steer proactive tool use — unlike a Claude Code skill
+/// (see `skills/godmode/SKILL.md`), which only that one client's
+/// skill-discovery system understands.
+const USAGE: &str = include_str!("../USAGE.md");
+
 /// Handle one incoming JSON-RPC message. Returns `Some(response)` for
 /// requests (which carry an `id` and must be answered) and `None` for
 /// notifications (which must not be answered per the JSON-RPC spec).
@@ -31,7 +40,8 @@ pub fn handle_message(pool: &mut OrganismPool, message: &Value) -> Option<Value>
         "initialize" => Ok(json!({
             "protocolVersion": PROTOCOL_VERSION,
             "capabilities": { "tools": {} },
-            "serverInfo": { "name": SERVER_NAME, "version": SERVER_VERSION }
+            "serverInfo": { "name": SERVER_NAME, "version": SERVER_VERSION },
+            "instructions": USAGE
         })),
         "tools/list" => Ok(json!({ "tools": tool_definitions() })),
         "tools/call" => handle_tools_call(pool, &params),
@@ -92,6 +102,16 @@ mod tests {
         let response = handle_message(&mut pool, &request).unwrap();
         assert_eq!(response["result"]["protocolVersion"], PROTOCOL_VERSION);
         assert_eq!(response["result"]["serverInfo"]["name"], SERVER_NAME);
+    }
+
+    #[test]
+    fn initialize_carries_usage_instructions_for_any_mcp_client() {
+        let mut pool = ephemeral_pool();
+        let request = json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} });
+        let response = handle_message(&mut pool, &request).unwrap();
+        let instructions = response["result"]["instructions"].as_str().unwrap();
+        assert!(instructions.contains("adam_identity"));
+        assert!(instructions.contains("adam_memory_query"));
     }
 
     #[test]

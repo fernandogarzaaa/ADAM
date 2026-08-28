@@ -1,8 +1,8 @@
 {
-  "$comment": "Drop-in MCP server config for Claude Code and any client that reads .mcp.json. Run `cargo build --release` in this repository once before use — the path below resolves relative to the repository root. Set ADAM_MEMORY_PATH to control where the organism's memory database lives; it defaults to the process working directory.",
+  "$comment": "Drop-in MCP server config for Claude Code and any client that reads .mcp.json. `bin/adam-mcp` builds the release binary itself on first run if it isn't already built, so no manual `cargo build` step is required. Set ADAM_MEMORY_PATH to control where the organism's memory database lives; it defaults to the process working directory.",
   "mcpServers": {
     "adam": {
-      "command": "./target/release/adam-mcp",
+      "command": "./bin/adam-mcp",
       "args": []
     }
   }

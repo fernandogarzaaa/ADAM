@@ -81,6 +81,42 @@ which uses the two env vars above); other ids get their state under
 }
 ```
 
+## Installing as a Claude Code plugin
+
+This repository is itself a Claude Code plugin marketplace
+(`.claude-plugin/marketplace.json`), so it can be added the same way any
+other plugin marketplace is — from a GitHub repo or git URL — without
+cloning it yourself first:
+
+```
+/plugin marketplace add fernandogarzaaa/ADAM
+/plugin install adam@adam
+```
+
+The first time the server actually starts, `bin/adam-mcp` builds the
+release binary itself (a Rust toolchain must be on `PATH`) rather than
+requiring a manual `cargo build --release` step — see
+[`bin/adam-mcp`](bin/adam-mcp).
+
+## Using ADAM on other platforms (Codex, or any MCP client)
+
+ADAM is a plain MCP stdio server, not tied to Claude Code — point Codex's
+(or any other MCP-compatible host's) server config at `bin/adam-mcp` the
+same way as the `.mcp.json`/Claude Desktop configs above.
+
+Tool availability alone doesn't make a host *proactively* use ADAM,
+though — an LLM only calls a tool it judges relevant to the current turn.
+To close that gap, `adam-mcp`'s `initialize` response includes an
+`instructions` field (part of the MCP spec itself, not a Claude Code
+extension) describing when and how to use the `adam_*` tools — see
+[`crates/adam-mcp/USAGE.md`](crates/adam-mcp/USAGE.md). Any MCP client
+that surfaces `initialize.instructions` to its model gets this guidance
+automatically, regardless of platform. Claude Code additionally has
+[`skills/godmode/SKILL.md`](skills/godmode/SKILL.md), a richer
+Claude-Code-specific skill that orchestrates ADAM alongside AXIOM and EVE;
+that mechanism is specific to Claude Code's skill system and has no
+equivalent on other hosts today.
+
 ## The 12 tools
 
 | Tool | Purpose |
