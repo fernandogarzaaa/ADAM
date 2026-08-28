@@ -1,0 +1,28 @@
+#!/usr/bin/env sh
+# Wrapper `command` for MCP clients (Claude Code plugin install, .mcp.json,
+# or any other MCP host) so that adding ADAM doesn't require a manual
+# `cargo build --release` step first. A plugin marketplace install just
+# copies/clones repository files — it does not run a build — so without
+# this wrapper the plugin's `command` would point at a binary that does not
+# exist yet on first install.
+#
+# Builds the release binary on first run (or after a source change) and
+# then execs it, forwarding all args and stdio untouched so this is
+# transparent to the MCP stdio transport.
+set -eu
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+binary="$root/target/release/adam-mcp"
+
+if [ ! -x "$binary" ]; then
+  if ! command -v cargo >/dev/null 2>&1; then
+    echo "adam-mcp: no prebuilt binary at $binary and 'cargo' is not on PATH." >&2
+    echo "Install a Rust toolchain (https://rustup.rs) and re-run, or build" >&2
+    echo "manually with: cargo build --release -p adam-mcp" >&2
+    exit 1
+  fi
+  echo "adam-mcp: building release binary (first run only)..." >&2
+  ( cd "$root" && cargo build --release -p adam-mcp ) >&2
+fi
+
+exec "$binary" "$@"

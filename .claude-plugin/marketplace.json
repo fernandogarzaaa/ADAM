@@ -12,7 +12,7 @@
     {
       "name": "adam",
       "source": "./",
-      "description": "Adds the ADAM MCP tools: inspect the organism's genome and identity, store and query durable memory, read and update beliefs, run registered skills, propose/accept/reject governed mutations to its own genome, and review evolution history and reflections. Requires a one-time `cargo build --release` in the plugin directory (see repository README).",
+      "description": "Adds the ADAM MCP tools: inspect the organism's genome and identity, store and query durable memory, read and update beliefs, run registered skills, propose/accept/reject governed mutations to its own genome, and review evolution history and reflections. First run builds the release binary automatically (a Rust toolchain must be installed); see the repository README.",
       "category": "productivity",
       "keywords": ["agent", "memory", "beliefs", "self-evolution", "mcp"]
     }
