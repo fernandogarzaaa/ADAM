@@ -17,3 +17,8 @@ adam_genome.json
 
 # Local machine configuration.
 .claude/settings.local.json
+
+# Local environment files (keep .env.example tracked)
+.env
+.env.*
+!.env.example
