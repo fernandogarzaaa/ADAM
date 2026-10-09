@@ -46,7 +46,11 @@ pub fn hmac_sha256_hex(key: &[u8], message: &[u8]) -> String {
     let mut outer = Sha256::new();
     outer.update(outer_key);
     outer.update(inner_digest);
-    format!("{:x}", outer.finalize())
+    outer
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>()
 }
 
 /// A CP/1 document wrapped for transport.
