@@ -69,7 +69,11 @@ impl Genome {
         let canonical = canonicalize(&value);
         let mut hasher = Sha256::new();
         hasher.update(canonical.as_bytes());
-        hasher.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>()
+        hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
     }
 }
 
