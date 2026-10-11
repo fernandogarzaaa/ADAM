@@ -51,7 +51,9 @@ cargo build --release
 cargo test --workspace
 ```
 
-Two `adam-mcp` tests exercise the real embedding model. If they fail with
+Two `adam-organism` tests exercise the real embedding model and are ignored by
+default (run them with `cargo test -p adam-organism -- --ignored`); two
+`adam-mcp` tests also embed via `memory_store`. If any fail with
 "failed to load embedding model", point `ADAM_EMBEDDING_CACHE_DIR` at a
 seeded model cache (see Troubleshooting below) or run them where the
 Hugging Face download can complete.
@@ -154,7 +156,7 @@ Know what survives a server restart and what does not:
 |---|---|---|
 | Genome identity + version history | Yes | `ADAM_GENOME_PATH` (JSON) |
 | Memories (`adam_memory_store`/`adam_memory_query`) | Yes | `ADAM_MEMORY_PATH` (SQLite) |
-| Governance audit log | Yes | alongside the genome history |
+| Governance audit log | No — session-scoped | in-memory only |
 | Beliefs (`adam_beliefs`) | No — session-scoped | in-memory only |
 | Skills (`adam_skills`) | No — session-scoped | in-memory only |
 | Evolution proposals (`adam_propose_mutation`/`adam_evolve`) | No — session-scoped | in-memory only |
@@ -176,9 +178,13 @@ variables, so on networks where all egress must go through a proxy the
 first-use download fails and every memory call errors until the model is
 present.
 
-Workaround: pre-seed the cache manually. Download these five files from
-`https://huggingface.co/Xenova/all-MiniLM-L6-v2/resolve/main/` (with
-`curl`, which does honor the proxy):
+Workaround: pre-seed the cache manually. First get the current `main`
+commit SHA from `https://huggingface.co/api/models/Xenova/all-MiniLM-L6-v2`,
+then download these five files from
+`https://huggingface.co/Xenova/all-MiniLM-L6-v2/resolve/<sha>/` — pinning
+the SHA (not `main`) in each URL so every file comes from the same
+revision that the cache layout records below (with `curl`, which does
+honor the proxy):
 
 - `onnx/model_quantized.onnx`
 - `tokenizer.json`
@@ -187,7 +193,8 @@ Workaround: pre-seed the cache manually. Download these five files from
 - `tokenizer_config.json`
 
 Get the current `main` commit SHA from
-`https://huggingface.co/api/models/Xenova/all-MiniLM-L6-v2`, then lay
+`https://huggingface.co/api/models/Xenova/all-MiniLM-L6-v2` (the same SHA
+used in the download URLs above), then lay
 them out as:
 
 ```
