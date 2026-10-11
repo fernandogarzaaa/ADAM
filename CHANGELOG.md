@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- README "Persistence model" section documenting what survives a server
+  restart (genome, memory, audit log) and what is session-scoped
+  (beliefs, skills, evolution proposals).
+- README "Troubleshooting" section for the first-use embedding-model
+  download failing on proxied networks (`hf-hub` ignores `HTTP(S)_PROXY`),
+  with manual cache pre-seed instructions; `.env.example` points at it.
+
 - Dependabot configuration for cargo and GitHub Actions (weekly).
 - `.env.example` documenting the environment variables ADAM reads (names only); local `.env` files are now git-ignored.
 - SECURITY.md describing private vulnerability reporting.
