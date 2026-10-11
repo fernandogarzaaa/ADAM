@@ -51,6 +51,11 @@ cargo build --release
 cargo test --workspace
 ```
 
+Two `adam-mcp` tests exercise the real embedding model. If they fail with
+"failed to load embedding model", point `ADAM_EMBEDDING_CACHE_DIR` at a
+seeded model cache (see Troubleshooting below) or run them where the
+Hugging Face download can complete.
+
 ## Running the MCP server
 
 ```bash
@@ -140,6 +145,64 @@ equivalent on other hosts today.
 docker build -t adam-mcp .
 docker run -i -v adam-data:/data -e ADAM_MEMORY_PATH=/data/adam_memory.db adam-mcp
 ```
+
+## Persistence model
+
+Know what survives a server restart and what does not:
+
+| State | Survives restart? | Where it lives |
+|---|---|---|
+| Genome identity + version history | Yes | `ADAM_GENOME_PATH` (JSON) |
+| Memories (`adam_memory_store`/`adam_memory_query`) | Yes | `ADAM_MEMORY_PATH` (SQLite) |
+| Governance audit log | Yes | alongside the genome history |
+| Beliefs (`adam_beliefs`) | No — session-scoped | in-memory only |
+| Skills (`adam_skills`) | No — session-scoped | in-memory only |
+| Evolution proposals (`adam_propose_mutation`/`adam_evolve`) | No — session-scoped | in-memory only |
+
+The MCP server is one long-lived process per host session, so beliefs,
+skills, and proposals work normally within a session; they are rebuilt
+from scratch when the process restarts. If you need belief or skill
+state to carry over, record it as a memory (or in the genome via an
+accepted mutation) before shutting down.
+
+## Troubleshooting
+
+### `adam_memory_store` fails with "failed to load embedding model"
+
+Memory storage needs the `all-MiniLM-L6-v2` ONNX model, downloaded from
+Hugging Face on first use and cached under `ADAM_EMBEDDING_CACHE_DIR`.
+The download client (`hf-hub`) does not honor `HTTP(S)_PROXY` environment
+variables, so on networks where all egress must go through a proxy the
+first-use download fails and every memory call errors until the model is
+present.
+
+Workaround: pre-seed the cache manually. Download these five files from
+`https://huggingface.co/Xenova/all-MiniLM-L6-v2/resolve/main/` (with
+`curl`, which does honor the proxy):
+
+- `onnx/model_quantized.onnx`
+- `tokenizer.json`
+- `config.json`
+- `special_tokens_map.json`
+- `tokenizer_config.json`
+
+Get the current `main` commit SHA from
+`https://huggingface.co/api/models/Xenova/all-MiniLM-L6-v2`, then lay
+them out as:
+
+```
+$ADAM_EMBEDDING_CACHE_DIR/models--Xenova--all-MiniLM-L6-v2/
+  refs/main                      # file containing the SHA
+  snapshots/<sha>/
+    onnx/model_quantized.onnx
+    tokenizer.json
+    config.json
+    special_tokens_map.json
+    tokenizer_config.json
+```
+
+and point `ADAM_EMBEDDING_CACHE_DIR` at that directory. No network is
+needed at runtime once the cache is seeded.
 
 ## License
 
