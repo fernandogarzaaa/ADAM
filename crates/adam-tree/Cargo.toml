@@ -1,0 +1,14 @@
+[package]
+name = "adam-tree"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Tree-of-summaries memory layer on ADAM: thread-scoped abstractive summaries over conversational leaves, with coverage bookkeeping, a token-budgeted read path, and an orchestrator-only summarizer lease"
+
+[dependencies]
+adam-memory = { path = "../adam-memory" }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+rusqlite = { workspace = true }

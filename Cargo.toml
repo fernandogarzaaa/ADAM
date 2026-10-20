@@ -5,6 +5,7 @@ members = [
     "crates/adam-protocol",
     "crates/adam-eventlog",
     "crates/adam-memory",
+    "crates/adam-tree",
     "crates/adam-skills",
     "crates/adam-beliefs",
     "crates/adam-evolution",
