@@ -348,15 +348,14 @@ fn l2_and_l3_passes_cover_across_threads_and_channels() {
     cleanup(&path);
 }
 
-// T7 (token arm): L2 fires on the open-child token sum alone.
+// T7 (token arm): L2 fires on the open-child token sum alone. The
+// L1s are built under the default config, whose child token trigger
+// (8,000) their combined ~430 tokens cannot reach; a second instance
+// with a low trigger then finds the L2 pass due on tokens alone.
 #[test]
 fn l2_fires_on_child_token_sum() {
-    let config = TreeConfig {
-        child_token_trigger: 100,
-        ..TreeConfig::default()
-    };
     let path = temp_db("l2tokens");
-    let store = TreeStore::with_config(path.to_str().unwrap(), config).unwrap();
+    let store = TreeStore::open(path.to_str().unwrap()).unwrap();
     for batch in 0..2 {
         for i in 0..3 {
             leaf(
@@ -367,7 +366,7 @@ fn l2_fires_on_child_token_sum() {
                 sized("leaf-", 600),
             );
         }
-        store
+        let report = store
             .summarize_now(
                 &SummarizeScope::Thread(THREAD.to_string()),
                 "orchestrator",
@@ -375,14 +374,20 @@ fn l2_fires_on_child_token_sum() {
                 &HashEmbedder,
             )
             .unwrap();
+        assert_eq!(report.summaries_created.len(), 1, "L1 only, no cascade");
     }
+    let config = TreeConfig {
+        child_token_trigger: 100,
+        ..TreeConfig::default()
+    };
+    let passer = TreeStore::with_config(path.to_str().unwrap(), config).unwrap();
     // Two open L1 nodes, count 2 < 8: only the token trigger can fire.
-    let report = store
+    let report = passer
         .run_due_passes("orchestrator", &FakeSummarizer, &HashEmbedder)
         .unwrap();
     assert_eq!(report.summaries_created.len(), 1);
     let l2 = report.summaries_created[0];
-    assert_eq!(store.node(l2).unwrap().unwrap().level, 2);
+    assert_eq!(passer.node(l2).unwrap().unwrap().level, 2);
     cleanup(&path);
 }
 
