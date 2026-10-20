@@ -284,7 +284,11 @@ impl TreeStore {
         let affected = self.conn.execute(
             "DELETE FROM tree_claims
              WHERE channel = ?1 AND external_id = ?2 AND memory_id = ?3",
-            params![claim.channel, claim.external_id, claim.memory_id.to_string()],
+            params![
+                claim.channel,
+                claim.external_id,
+                claim.memory_id.to_string()
+            ],
         )?;
         Ok(affected > 0)
     }
