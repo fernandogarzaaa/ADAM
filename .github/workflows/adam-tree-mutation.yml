@@ -21,6 +21,10 @@ env:
 jobs:
   mutation:
     runs-on: ubuntu-latest
+    # This job runs pull-request code and installed tooling; the
+    # token only needs to read the checkout, nothing more.
+    permissions:
+      contents: read
     timeout-minutes: 330
     steps:
       - uses: actions/checkout@v7
