@@ -190,11 +190,7 @@ impl TreeStore {
         Ok(())
     }
 
-    pub(crate) fn set_node_state(
-        &self,
-        id: MemoryId,
-        state: NodeState,
-    ) -> Result<(), TreeError> {
+    pub(crate) fn set_node_state(&self, id: MemoryId, state: NodeState) -> Result<(), TreeError> {
         self.conn.execute(
             "UPDATE tree_nodes SET state = ?1 WHERE memory_id = ?2",
             params![state.as_str(), id.to_string()],
@@ -266,8 +262,7 @@ impl TreeStore {
                 })?;
                 Ok(Some(Lease {
                     holder,
-                    expires_at: DateTime::from_timestamp_millis(expiry_ms)
-                        .unwrap_or_else(Utc::now),
+                    expires_at: DateTime::from_timestamp_millis(expiry_ms).unwrap_or_else(Utc::now),
                 }))
             }
             _ => Ok(None),
@@ -342,8 +337,9 @@ fn row_to_node(row: &Row) -> rusqlite::Result<Result<TreeNode, TreeError>> {
                 TreeError::Corrupt(format!("token_estimate {token_estimate} is out of range"))
             })?,
             pinned: pinned != 0,
-            state: NodeState::parse(&state)
-                .ok_or_else(|| TreeError::Corrupt(format!("tree node state '{state}' is invalid")))?,
+            state: NodeState::parse(&state).ok_or_else(|| {
+                TreeError::Corrupt(format!("tree node state '{state}' is invalid"))
+            })?,
         })
     })())
 }

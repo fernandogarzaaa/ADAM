@@ -79,10 +79,7 @@ fn has_labelled_secret(content: &str) -> bool {
         for (idx, _) in lower.match_indices(label) {
             let rest = &lower[idx + label.len()..];
             let rest = rest.trim_start();
-            let Some(rest) = rest
-                .strip_prefix(':')
-                .or_else(|| rest.strip_prefix('='))
-            else {
+            let Some(rest) = rest.strip_prefix(':').or_else(|| rest.strip_prefix('=')) else {
                 continue;
             };
             let value_len = rest

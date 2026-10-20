@@ -51,13 +51,7 @@ impl TreeStore {
         summarizer: &dyn Summarizer,
         embedder: &dyn Embedder,
     ) -> Result<SummaryReport, TreeError> {
-        self.run_gated(
-            &SummarizeScope::AllDue,
-            false,
-            holder,
-            summarizer,
-            embedder,
-        )
+        self.run_gated(&SummarizeScope::AllDue, false, holder, summarizer, embedder)
     }
 
     fn run_gated(
@@ -241,10 +235,7 @@ impl TreeStore {
         let mut payloads: Vec<SummaryChild> = Vec::with_capacity(children.len());
         for child in &children {
             let record = self.store.get(child.memory_id)?.ok_or_else(|| {
-                TreeError::Corrupt(format!(
-                    "tree node {} has no ADAM record",
-                    child.memory_id
-                ))
+                TreeError::Corrupt(format!("tree node {} has no ADAM record", child.memory_id))
             })?;
             payloads.push(SummaryChild {
                 memory_id: child.memory_id,
@@ -304,7 +295,10 @@ impl TreeStore {
         let thread_key = match &unit.thread_key {
             Some(thread) => thread.clone(),
             None => {
-                if children.iter().all(|c| c.thread_key == children[0].thread_key) {
+                if children
+                    .iter()
+                    .all(|c| c.thread_key == children[0].thread_key)
+                {
                     children[0].thread_key.clone()
                 } else {
                     unit.contact_key.clone()
@@ -370,10 +364,7 @@ impl TreeStore {
         let mut out = Vec::new();
         for node in nodes {
             let record = self.store.get(node.memory_id)?.ok_or_else(|| {
-                TreeError::Corrupt(format!(
-                    "tree node {} has no ADAM record",
-                    node.memory_id
-                ))
+                TreeError::Corrupt(format!("tree node {} has no ADAM record", node.memory_id))
             })?;
             if self.is_summarizable(&node, &record) {
                 out.push(node);
@@ -452,10 +443,7 @@ impl TreeStore {
                 NodeState::Covered => parents.len() == 1,
             };
             if !ok {
-                return Err(TreeError::PartitionViolation(
-                    node.memory_id,
-                    parents.len(),
-                ));
+                return Err(TreeError::PartitionViolation(node.memory_id, parents.len()));
             }
         }
         Ok(())

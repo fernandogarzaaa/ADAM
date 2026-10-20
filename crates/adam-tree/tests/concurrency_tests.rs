@@ -8,8 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use adam_tree::{
-    ContextRequest, FakeSummarizer, HashEmbedder, LeafWrite, NodeState, SummarizeScope,
-    TreeStore,
+    ContextRequest, FakeSummarizer, HashEmbedder, LeafWrite, NodeState, SummarizeScope, TreeStore,
 };
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);

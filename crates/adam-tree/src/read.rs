@@ -8,8 +8,8 @@ use chrono::{DateTime, Utc};
 
 use crate::error::TreeError;
 use crate::model::{
-    token_estimate, ContextBundle, ContextRecord, ContextRequest, DrillResult, Embedder,
-    NodeState, SearchHit, TreeNode,
+    token_estimate, ContextBundle, ContextRecord, ContextRequest, DrillResult, Embedder, NodeState,
+    SearchHit, TreeNode,
 };
 use crate::store::TreeStore;
 
@@ -112,7 +112,9 @@ impl TreeStore {
         if let Some(query) = &request.query {
             if !query.is_empty() {
                 let query_embedding = embedder.embed(query)?;
-                let scored = self.store.query_similar(&query_embedding, None, usize::MAX)?;
+                let scored = self
+                    .store
+                    .query_similar(&query_embedding, None, usize::MAX)?;
                 let mut band_used = 0usize;
                 // Two passes over the same ranking: pinned leaves of
                 // the active contact first, then everything else.
@@ -211,7 +213,12 @@ impl TreeStore {
             }
             None => {
                 let mut all = self
-                    .query_nodes(None, Some(&request.contact_key), None, Some(NodeState::Open))?
+                    .query_nodes(
+                        None,
+                        Some(&request.contact_key),
+                        None,
+                        Some(NodeState::Open),
+                    )?
                     .into_iter()
                     .filter(|n| n.level >= 1)
                     .collect::<Vec<_>>();
@@ -238,7 +245,9 @@ impl TreeStore {
         top_k: usize,
     ) -> Result<Vec<SearchHit>, TreeError> {
         let query_embedding = embedder.embed(query)?;
-        let scored = self.store.query_similar(&query_embedding, None, usize::MAX)?;
+        let scored = self
+            .store
+            .query_similar(&query_embedding, None, usize::MAX)?;
         let mut hits: Vec<SearchHit> = Vec::new();
         // Covered node -> its covering parent, for the demotion rule.
         let mut parents: HashMap<MemoryId, MemoryId> = HashMap::new();
@@ -295,11 +304,7 @@ impl TreeStore {
     /// the bottom level returns the verbatim leaves, because ADAM
     /// never deletes what a summary covered. Records that do not fit
     /// the budget whole are skipped, never cut.
-    pub fn drill_down(
-        &self,
-        id: MemoryId,
-        token_budget: usize,
-    ) -> Result<DrillResult, TreeError> {
+    pub fn drill_down(&self, id: MemoryId, token_budget: usize) -> Result<DrillResult, TreeError> {
         if self.store.get(id)?.is_none() {
             return Err(TreeError::Memory(MemoryError::NotFound(id)));
         }

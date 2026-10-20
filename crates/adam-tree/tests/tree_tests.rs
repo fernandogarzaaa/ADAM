@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use adam_memory::{MemoryKind, MemoryRecord, MemoryStore, Provenance};
 use adam_tree::{
-    token_estimate, ContextRequest, FakeSummarizer, HashEmbedder, LeafOutcome, LeafWrite,
-    MemoryId, NodeState, SummarizeScope, TreeConfig, TreeError, TreeStore,
+    token_estimate, ContextRequest, FakeSummarizer, HashEmbedder, LeafOutcome, LeafWrite, MemoryId,
+    NodeState, SummarizeScope, TreeConfig, TreeError, TreeStore,
 };
 use chrono::{Duration, Utc};
 
@@ -192,7 +192,14 @@ fn triggers_fire_at_thresholds_and_not_before() {
     let mut ids = Vec::new();
     for i in 0..23 {
         ids.push(
-            leaf(&store, "email", THREAD, &format!("c-{i}"), sized("leaf-", 40)).memory_id,
+            leaf(
+                &store,
+                "email",
+                THREAD,
+                &format!("c-{i}"),
+                sized("leaf-", 40),
+            )
+            .memory_id,
         );
     }
     let report = store
@@ -214,7 +221,13 @@ fn triggers_fire_at_thresholds_and_not_before() {
     // trigger, so only the token sum can fire it.
     let (store, path) = open("trigger-tokens");
     for i in 0..9 {
-        leaf(&store, "email", THREAD, &format!("t-{i}"), sized("leaf-", 600));
+        leaf(
+            &store,
+            "email",
+            THREAD,
+            &format!("t-{i}"),
+            sized("leaf-", 600),
+        );
     }
     let report = store
         .run_due_passes("orchestrator", &FakeSummarizer, &HashEmbedder)
@@ -379,7 +392,13 @@ fn l2_fires_on_child_token_sum() {
 fn read_context_respects_bands_and_never_truncates() {
     let (store, path) = open("budget");
     for i in 0..4 {
-        leaf(&store, "email", THREAD, &format!("old-{i}"), sized("leaf-", 60));
+        leaf(
+            &store,
+            "email",
+            THREAD,
+            &format!("old-{i}"),
+            sized("leaf-", 60),
+        );
     }
     let report = store
         .summarize_now(
@@ -392,7 +411,13 @@ fn read_context_respects_bands_and_never_truncates() {
     let l1 = report.summaries_created[0];
     let l1_tokens = store.node(l1).unwrap().unwrap().token_estimate;
     for i in 0..4 {
-        leaf(&store, "email", THREAD, &format!("new-{i}"), sized("leaf-", 60));
+        leaf(
+            &store,
+            "email",
+            THREAD,
+            &format!("new-{i}"),
+            sized("leaf-", 60),
+        );
     }
 
     // Generous budget: everything fits, byte for byte.
@@ -407,11 +432,7 @@ fn read_context_respects_bands_and_never_truncates() {
     assert!(!bundle.overflow);
     for band in [&bundle.recent_leaves, &bundle.summaries, &bundle.recall] {
         for record in band {
-            let stored = store
-                .memory_store()
-                .get(record.memory_id)
-                .unwrap()
-                .unwrap();
+            let stored = store.memory_store().get(record.memory_id).unwrap().unwrap();
             assert_eq!(record.content, stored.content);
         }
     }
@@ -574,17 +595,18 @@ fn never_summarize_set_is_excluded_from_forced_passes() {
     let mut normal = Vec::new();
     for i in 0..3 {
         normal.push(
-            leaf(&store, "email", THREAD, &format!("n-{i}"), sized("leaf-", 150)).memory_id,
+            leaf(
+                &store,
+                "email",
+                THREAD,
+                &format!("n-{i}"),
+                sized("leaf-", 150),
+            )
+            .memory_id,
         );
     }
     // A pinned leaf.
-    let mut pinned_input = LeafWrite::new(
-        "email",
-        CONTACT,
-        THREAD,
-        "pin-1",
-        sized("pinned-", 150),
-    );
+    let mut pinned_input = LeafWrite::new("email", CONTACT, THREAD, "pin-1", sized("pinned-", 150));
     pinned_input.pinned = true;
     let pinned = store
         .write_leaf(&HashEmbedder, &pinned_input)
@@ -668,10 +690,7 @@ fn oversize_summary_is_rejected_after_one_retry() {
         calls: RefCell<usize>,
     }
     impl adam_tree::Summarizer for StubbornSummarizer {
-        fn summarize(
-            &self,
-            _request: &adam_tree::SummaryRequest,
-        ) -> Result<String, TreeError> {
+        fn summarize(&self, _request: &adam_tree::SummaryRequest) -> Result<String, TreeError> {
             *self.calls.borrow_mut() += 1;
             Ok("x".repeat(100_000))
         }
@@ -680,7 +699,16 @@ fn oversize_summary_is_rejected_after_one_retry() {
     let (store, path) = open("oversize-pass");
     let mut ids = Vec::new();
     for i in 0..3 {
-        ids.push(leaf(&store, "email", THREAD, &format!("o-{i}"), sized("leaf-", 200)).memory_id);
+        ids.push(
+            leaf(
+                &store,
+                "email",
+                THREAD,
+                &format!("o-{i}"),
+                sized("leaf-", 200),
+            )
+            .memory_id,
+        );
     }
     let stubborn = StubbornSummarizer {
         calls: RefCell::new(0),

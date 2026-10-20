@@ -86,9 +86,7 @@ impl TreeStore {
                 // just-stored record stays as an unadopted orphan,
                 // which the adoption sweep deliberately skips for the
                 // same reason.
-                if let Some(existing) =
-                    self.node_by_external(&input.channel, &input.external_id)?
-                {
+                if let Some(existing) = self.node_by_external(&input.channel, &input.external_id)? {
                     return Ok(LeafOutcome {
                         memory_id: existing.memory_id,
                         duplicate: true,
@@ -217,12 +215,14 @@ impl TreeStore {
                 let span_start = children.iter().map(|n| n.span_start).min().unwrap();
                 let span_end = children.iter().map(|n| n.span_end).max().unwrap();
                 let contact_key = children[0].contact_key.clone();
-                let thread_key =
-                    if children.iter().all(|n| n.thread_key == children[0].thread_key) {
-                        children[0].thread_key.clone()
-                    } else {
-                        contact_key.clone()
-                    };
+                let thread_key = if children
+                    .iter()
+                    .all(|n| n.thread_key == children[0].thread_key)
+                {
+                    children[0].thread_key.clone()
+                } else {
+                    contact_key.clone()
+                };
                 self.insert_node(&TreeNode {
                     memory_id: record.id,
                     level,
