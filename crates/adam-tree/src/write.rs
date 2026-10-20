@@ -19,10 +19,28 @@ impl TreeStore {
     /// This closes ADAM's write-idempotency gap at the layer level,
     /// using the same duplicate-rejection idea as adam-eventlog.
     ///
-    /// The ADAM record write and the sidecar insert are not one
-    /// transaction (they travel over two connections); a crash
-    /// between them leaves an orphan leaf that the next adoption
-    /// sweep heals (see [`TreeStore::adopt_orphans`]).
+    /// The write is claim-first. The record's id is known before it
+    /// is stored (`MemoryRecord::new` mints it), so the sidecar row
+    /// is inserted first, in the `pending` state, carrying the real
+    /// thread key. The unique `(channel, external_id)` index is the
+    /// single atomic gate: only the claim's owner goes on to store
+    /// a record, so at most one record per pair is ever stored by a
+    /// writer that completes, and a stored leaf's thread placement
+    /// was fixed before its record existed. (The claim insert
+    /// relies on SQLite foreign-key enforcement staying off on the
+    /// sidecar connection, the default: the row references a
+    /// `memories` id that lands a moment later. Enabling FK
+    /// enforcement would make claims fail loudly, never silently
+    /// corrupt.)
+    ///
+    /// The previous order (record first, sidecar second) had a
+    /// window between the two writes: an adoption sweep in that
+    /// window adopted the orphan record into the fallback thread
+    /// bucket, and the channel retry then stored a second record
+    /// for the same pair. Claim-first removes the window: a crash
+    /// leaves only a pending claim or a pending claim plus its
+    /// record, and both shapes settle deterministically (see
+    /// [`TreeStore::settle_existing`] and [`TreeStore::adopt_orphans`]).
     pub fn write_leaf(
         &self,
         embedder: &dyn Embedder,
@@ -37,11 +55,15 @@ impl TreeStore {
                 "channel, contact_key, thread_key, and external_id must be non-empty".to_string(),
             ));
         }
+        // Fast path: the pair is already owned. Settling also heals
+        // whatever a crashed earlier attempt left behind.
         if let Some(existing) = self.node_by_external(&input.channel, &input.external_id)? {
-            return Ok(LeafOutcome {
-                memory_id: existing.memory_id,
-                duplicate: true,
-            });
+            if let Some(owner) = self.settle_existing(&existing, true)? {
+                return Ok(LeafOutcome {
+                    memory_id: owner.memory_id,
+                    duplicate: true,
+                });
+            }
         }
         let embedding = embedder.embed(&input.content)?;
         let mut record = MemoryRecord::new(
@@ -59,7 +81,6 @@ impl TreeStore {
             record.created_at = at;
             record.last_accessed_at = at;
         }
-        self.store.store(&record)?;
         let node = TreeNode {
             memory_id: record.id,
             level: 0,
@@ -72,28 +93,111 @@ impl TreeStore {
             covered_count: 0,
             token_estimate: token_estimate(&record.content),
             pinned: input.pinned,
-            state: NodeState::Open,
+            state: NodeState::Pending,
         };
         match self.insert_node(&node) {
-            Ok(()) => Ok(LeafOutcome {
-                memory_id: record.id,
-                duplicate: false,
-            }),
+            Ok(()) => {}
             Err(err) => {
-                // Lost a race against a concurrent writer of the same
-                // (channel, external_id): the unique index rejected
-                // our row, and their leaf is the canonical one. Our
-                // just-stored record stays as an unadopted orphan,
-                // which the adoption sweep deliberately skips for the
-                // same reason.
-                if let Some(existing) = self.node_by_external(&input.channel, &input.external_id)? {
-                    return Ok(LeafOutcome {
-                        memory_id: existing.memory_id,
-                        duplicate: true,
-                    });
+                // Lost the claim race against a concurrent writer of
+                // the same (channel, external_id): the unique index
+                // rejected our row, and their leaf is the canonical
+                // one. Our record was never stored, so this path
+                // leaves no orphan behind.
+                if let Some(existing) =
+                    self.node_by_external(&input.channel, &input.external_id)?
+                {
+                    if let Some(owner) = self.settle_existing(&existing, false)? {
+                        return Ok(LeafOutcome {
+                            memory_id: owner.memory_id,
+                            duplicate: true,
+                        });
+                    }
                 }
-                Err(err)
+                return Err(err);
             }
+        }
+        // We own the claim; only now may the record be stored.
+        if let Err(err) = self.store.store(&record) {
+            // Release the claim so the pair's retry starts clean.
+            let _ = self.delete_node(record.id);
+            return Err(err.into());
+        }
+        if !self.finalize_claim(record.id)? {
+            // Residual window: a retry settled our claim as stale
+            // in the instant before the record landed (its guarded
+            // delete still saw no record), so the claim row is gone.
+            // Re-claim now that the record exists. If another writer
+            // owns the pair instead, their leaf is canonical and
+            // this record stays an unadopted orphan, the same
+            // race-loser rule adoption already applies.
+            let mut open_node = node.clone();
+            open_node.state = NodeState::Open;
+            match self.insert_node(&open_node) {
+                Ok(()) => {}
+                Err(err) => {
+                    if let Some(existing) =
+                        self.node_by_external(&input.channel, &input.external_id)?
+                    {
+                        if let Some(owner) = self.settle_existing(&existing, false)? {
+                            return Ok(LeafOutcome {
+                                memory_id: owner.memory_id,
+                                duplicate: true,
+                            });
+                        }
+                    }
+                    return Err(err);
+                }
+            }
+        }
+        Ok(LeafOutcome {
+            memory_id: record.id,
+            duplicate: false,
+        })
+    }
+
+    /// Resolve a sidecar row that already owns a leaf's
+    /// `(channel, external_id)` pair, healing the states a crashed
+    /// claim-first write can leave behind:
+    ///
+    /// - a settled row (open or covered) is the owner, returned
+    ///   as-is;
+    /// - a pending row whose record exists is a write that crashed
+    ///   between storing its record and finalizing its claim:
+    ///   finalize it and return it as the owner;
+    /// - a pending row with no record is a write that crashed
+    ///   between claiming and storing. With `drop_stale` (the
+    ///   `write_leaf` fast path, where the caller is that pair's
+    ///   retry) the stale claim is deleted and `None` is returned
+    ///   so the caller writes fresh. Without it (a claim this call
+    ///   just raced and lost) the row may belong to a live writer,
+    ///   so it is returned as the owner untouched.
+    ///
+    /// Returns `None` only when the pair is now unowned.
+    fn settle_existing(
+        &self,
+        node: &TreeNode,
+        drop_stale: bool,
+    ) -> Result<Option<TreeNode>, TreeError> {
+        if node.state != NodeState::Pending {
+            return Ok(Some(node.clone()));
+        }
+        if self.store.get(node.memory_id)?.is_some() {
+            self.finalize_claim(node.memory_id)?;
+            let mut settled = node.clone();
+            settled.state = NodeState::Open;
+            return Ok(Some(settled));
+        }
+        if !drop_stale {
+            return Ok(Some(node.clone()));
+        }
+        if self.delete_stale_claim(node.memory_id)? {
+            return Ok(None);
+        }
+        // The guarded delete refused: the record landed
+        // concurrently. Whatever owns the pair now is the owner.
+        match node.channel.as_deref().zip(node.external_id.as_deref()) {
+            Some((channel, external_id)) => self.node_by_external(channel, external_id),
+            None => Ok(None),
         }
     }
 
@@ -116,9 +220,17 @@ impl TreeStore {
     /// section 3), so a crash at any pass step self-heals on the next
     /// run instead of corrupting the tree:
     ///
+    /// 0. Pending leaf claims whose record landed are finalized to
+    ///    open (a claim-first write that crashed between storing its
+    ///    record and finalizing). A pending claim with no record is
+    ///    left alone: it belongs to a live writer or to a write that
+    ///    crashed before storing, and the pair's next `write_leaf`
+    ///    settles it.
     /// 1. Episodic records with a `channel:` origin and no sidecar
     ///    row are adopted as orphan leaves (thread key falls back to
-    ///    the date-bucketed slug from spec section 2).
+    ///    the date-bucketed slug from spec section 2). With
+    ///    claim-first writes this only fires for records written
+    ///    outside `write_leaf` (the escape hatch, pre-claim data).
     /// 2. Semantic records with a `summary:tree:L<n>` origin and no
     ///    sidecar row get their row rebuilt from their evidence, in
     ///    ascending level order so children exist before parents.
@@ -132,6 +244,17 @@ impl TreeStore {
     /// its own at any time.
     pub fn adopt_orphans(&self) -> Result<AdoptionReport, TreeError> {
         let mut report = AdoptionReport::default();
+
+        // 0. Finalize claims whose records landed.
+        let pending = self.query_nodes(None, None, None, Some(NodeState::Pending))?;
+        for node in &pending {
+            if self.store.get(node.memory_id)?.is_some()
+                && self.finalize_claim(node.memory_id)?
+            {
+                report.claims_finalized += 1;
+            }
+        }
+
         let records = self.store.all()?;
 
         // 1. Orphan leaves.
@@ -271,5 +394,206 @@ impl TreeStore {
             }
         }
         Ok(flipped)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing::HashEmbedder;
+    use chrono::{DateTime, Duration, Utc};
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    const CONTACT: &str = "alex@example.com";
+    const THREAD: &str = "alex@example.com/contract-review";
+
+    fn temp_db(tag: &str) -> PathBuf {
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let path = std::env::temp_dir().join(format!(
+            "adam-tree-write-{tag}-{}-{n}.db",
+            std::process::id()
+        ));
+        cleanup(&path);
+        path
+    }
+
+    fn cleanup(path: &Path) {
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+    }
+
+    fn open(tag: &str) -> (TreeStore, PathBuf) {
+        let path = temp_db(tag);
+        let store = TreeStore::open(path.to_str().unwrap()).unwrap();
+        (store, path)
+    }
+
+    /// A leaf record and its pending claim, built exactly as
+    /// `write_leaf` builds them, so a test can stop the write at a
+    /// chosen step and drive the remaining steps by hand. That is
+    /// what makes the crash interleavings deterministic: no
+    /// threads, no sleeps, no timing luck.
+    fn claim_and_record(external_id: &str, at: DateTime<Utc>) -> (MemoryRecord, TreeNode) {
+        let mut record = MemoryRecord::new(
+            MemoryKind::Episodic,
+            format!("content for {external_id}"),
+            vec![0.1, 0.9],
+            1.0,
+            Provenance {
+                origin: format!("channel:email:{CONTACT}"),
+                evidence: vec![external_id.to_string()],
+            },
+            0.0,
+        );
+        record.created_at = at;
+        record.last_accessed_at = at;
+        let node = TreeNode {
+            memory_id: record.id,
+            level: 0,
+            thread_key: THREAD.to_string(),
+            contact_key: CONTACT.to_string(),
+            channel: Some("email".to_string()),
+            external_id: Some(external_id.to_string()),
+            span_start: at,
+            span_end: at,
+            covered_count: 0,
+            token_estimate: token_estimate(&record.content),
+            pinned: false,
+            state: NodeState::Pending,
+        };
+        (record, node)
+    }
+
+    fn leaf_write(external_id: &str, content: &str, at: DateTime<Utc>) -> LeafWrite {
+        let mut input = LeafWrite::new("email", CONTACT, THREAD, external_id, content);
+        input.at = Some(at);
+        input
+    }
+
+    fn records_for(store: &TreeStore, external_id: &str) -> usize {
+        store
+            .store
+            .all()
+            .unwrap()
+            .iter()
+            .filter(|r| r.provenance.evidence.iter().any(|e| e == external_id))
+            .count()
+    }
+
+    /// Crash window 1: claim inserted, record never stored.
+    /// Adoption must not invent a fallback-bucket leaf out of the
+    /// claim, and the retry must settle the stale claim and land
+    /// the leaf, once, in its real thread.
+    #[test]
+    fn crash_after_claim_retry_writes_fresh_in_real_thread() {
+        let (store, path) = open("claim-crash");
+        let at = Utc::now() - Duration::hours(1);
+        let (record, claim) = claim_and_record("ext-claim", at);
+        store.insert_node(&claim).unwrap();
+
+        let adopted = store.adopt_orphans().unwrap();
+        assert_eq!(adopted.leaves_adopted, 0);
+        assert_eq!(adopted.claims_finalized, 0);
+        let node = store.node(record.id).unwrap().unwrap();
+        assert_eq!(node.state, NodeState::Pending);
+        assert_eq!(node.thread_key, THREAD);
+
+        let outcome = store
+            .write_leaf(&HashEmbedder, &leaf_write("ext-claim", &record.content, at))
+            .unwrap();
+        assert!(!outcome.duplicate);
+        assert_eq!(records_for(&store, "ext-claim"), 1);
+        let node = store.node(outcome.memory_id).unwrap().unwrap();
+        assert_eq!(node.thread_key, THREAD);
+        assert_eq!(node.state, NodeState::Open);
+        store.assert_partition().unwrap();
+        cleanup(&path);
+    }
+
+    /// Crash window 2: claim inserted and record stored, claim
+    /// never finalized. Adoption finalizes it in its real thread
+    /// (no fallback bucket, no thread guessing), and the retry is
+    /// a duplicate of the same single record.
+    #[test]
+    fn crash_after_store_adoption_finalizes_and_retry_is_duplicate() {
+        let (store, path) = open("store-crash");
+        let at = Utc::now() - Duration::hours(2);
+        let (record, claim) = claim_and_record("ext-stored", at);
+        store.insert_node(&claim).unwrap();
+        store.store.store(&record).unwrap();
+
+        let adopted = store.adopt_orphans().unwrap();
+        assert_eq!(adopted.claims_finalized, 1);
+        assert_eq!(adopted.leaves_adopted, 0);
+        let node = store.node(record.id).unwrap().unwrap();
+        assert_eq!(node.state, NodeState::Open);
+        assert_eq!(node.thread_key, THREAD);
+
+        let outcome = store
+            .write_leaf(&HashEmbedder, &leaf_write("ext-stored", &record.content, at))
+            .unwrap();
+        assert!(outcome.duplicate);
+        assert_eq!(outcome.memory_id, record.id);
+        assert_eq!(records_for(&store, "ext-stored"), 1);
+        store.assert_partition().unwrap();
+        cleanup(&path);
+    }
+
+    /// The interleaving that duplicated leaves before claim-first
+    /// writes (PR #23's documented race): a writer's record lands,
+    /// an adoption sweep from a second instance runs before the
+    /// write completes, then the channel retries the pair. Driven
+    /// step by step; exactly one record, in the real thread.
+    #[test]
+    fn adoption_window_interleaving_lands_one_leaf_in_real_thread() {
+        let path = temp_db("window");
+        let a = TreeStore::open(path.to_str().unwrap()).unwrap();
+        let b = TreeStore::open(path.to_str().unwrap()).unwrap();
+        let at = Utc::now() - Duration::hours(3);
+        let (record, claim) = claim_and_record("ext-window", at);
+
+        // Writer A: claim and record in, finalize not yet run.
+        a.insert_node(&claim).unwrap();
+        a.store.store(&record).unwrap();
+
+        // The sweep runs inside the window.
+        let adopted = b.adopt_orphans().unwrap();
+        assert_eq!(adopted.leaves_adopted, 0);
+        assert_eq!(adopted.claims_finalized, 1);
+
+        // The channel retry of the same pair.
+        let outcome = b
+            .write_leaf(&HashEmbedder, &leaf_write("ext-window", &record.content, at))
+            .unwrap();
+        assert!(outcome.duplicate);
+        assert_eq!(outcome.memory_id, record.id);
+        assert_eq!(records_for(&b, "ext-window"), 1);
+        let node = b.node(record.id).unwrap().unwrap();
+        assert_eq!(node.thread_key, THREAD);
+        assert_eq!(node.state, NodeState::Open);
+        b.assert_partition().unwrap();
+        cleanup(&path);
+    }
+
+    /// The unique `(channel, external_id)` index is the claim gate:
+    /// a second claimant with a different record id cannot take a
+    /// claimed pair over.
+    #[test]
+    fn second_claim_for_same_pair_is_rejected_by_the_index() {
+        let path = temp_db("gate");
+        let a = TreeStore::open(path.to_str().unwrap()).unwrap();
+        let b = TreeStore::open(path.to_str().unwrap()).unwrap();
+        let at = Utc::now();
+        let (_, claim_a) = claim_and_record("ext-gate", at);
+        let (_, claim_b) = claim_and_record("ext-gate", at);
+        a.insert_node(&claim_a).unwrap();
+        assert!(b.insert_node(&claim_b).is_err());
+        let owner = b.node_by_external("email", "ext-gate").unwrap().unwrap();
+        assert_eq!(owner.memory_id, claim_a.memory_id);
+        cleanup(&path);
     }
 }

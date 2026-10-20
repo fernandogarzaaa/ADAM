@@ -141,6 +141,12 @@ pub struct LeafOutcome {
 /// Coverage state of a tree node (the sidecar `state` column).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeState {
+    /// Claimed by a leaf write that has not stored its record yet
+    /// (or crashed trying). Only level-0 leaf claims are ever
+    /// pending; a pending node is invisible to summarization and to
+    /// the read bands, and is settled by the pair's next
+    /// `write_leaf` or by adoption (see `write.rs`).
+    Pending,
     /// Not yet covered by a next-level summary; a current top node.
     Open,
     /// Covered by exactly one next-level summary.
@@ -151,6 +157,7 @@ impl NodeState {
     /// The stored string form.
     pub fn as_str(&self) -> &'static str {
         match self {
+            NodeState::Pending => "pending",
             NodeState::Open => "open",
             NodeState::Covered => "covered",
         }
@@ -159,6 +166,7 @@ impl NodeState {
     /// Parse the stored string form.
     pub fn parse(s: &str) -> Option<Self> {
         match s {
+            "pending" => Some(NodeState::Pending),
             "open" => Some(NodeState::Open),
             "covered" => Some(NodeState::Covered),
             _ => None,
@@ -321,6 +329,9 @@ pub struct SummaryReport {
 /// tree.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AdoptionReport {
+    /// Pending leaf claims whose record had landed, finalized to
+    /// open (a write that crashed after storing, before finalizing).
+    pub claims_finalized: usize,
     /// Orphan leaves given a sidecar row.
     pub leaves_adopted: usize,
     /// Orphan summaries whose sidecar row was rebuilt from evidence.

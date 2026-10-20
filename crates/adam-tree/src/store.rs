@@ -198,6 +198,42 @@ impl TreeStore {
         Ok(())
     }
 
+    /// Remove a sidecar row outright. Returns whether a row was
+    /// deleted. Used to release a leaf claim whose record write
+    /// failed, so the pair's retry starts clean.
+    pub(crate) fn delete_node(&self, id: MemoryId) -> Result<bool, TreeError> {
+        let affected = self.conn.execute(
+            "DELETE FROM tree_nodes WHERE memory_id = ?1",
+            params![id.to_string()],
+        )?;
+        Ok(affected > 0)
+    }
+
+    /// Flip a leaf claim from pending to open (its record is stored
+    /// by now). Returns false when the row is not a pending claim,
+    /// e.g. a retry already settled or released it.
+    pub(crate) fn finalize_claim(&self, id: MemoryId) -> Result<bool, TreeError> {
+        let affected = self.conn.execute(
+            "UPDATE tree_nodes SET state = 'open' \
+             WHERE memory_id = ?1 AND state = 'pending'",
+            params![id.to_string()],
+        )?;
+        Ok(affected > 0)
+    }
+
+    /// Delete a pending claim only if its record still does not
+    /// exist. One statement, so the existence check and the delete
+    /// cannot be split by the claim's writer storing its record in
+    /// between. Returns whether the claim was deleted.
+    pub(crate) fn delete_stale_claim(&self, id: MemoryId) -> Result<bool, TreeError> {
+        let affected = self.conn.execute(
+            "DELETE FROM tree_nodes WHERE memory_id = ?1 AND state = 'pending' \
+             AND NOT EXISTS (SELECT 1 FROM memories WHERE id = ?1)",
+            params![id.to_string()],
+        )?;
+        Ok(affected > 0)
+    }
+
     /// Try to acquire the single summarizer lease for `holder`.
     /// Returns `None` when another holder's lease is still live.
     ///

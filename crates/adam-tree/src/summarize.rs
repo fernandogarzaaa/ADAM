@@ -433,12 +433,13 @@ impl TreeStore {
 
     /// Verify the coverage partition over the whole tree (spec
     /// sections 2 and 3): every covered node has exactly one tree
-    /// parent, every open node has none.
+    /// parent, every open or pending node has none.
     pub fn assert_partition(&self) -> Result<(), TreeError> {
         let nodes = self.query_nodes(None, None, None, None)?;
         for node in &nodes {
             let parents = self.tree_parents(node.memory_id)?;
             let ok = match node.state {
+                NodeState::Pending => parents.is_empty(),
                 NodeState::Open => parents.is_empty(),
                 NodeState::Covered => parents.len() == 1,
             };
