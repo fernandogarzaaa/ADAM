@@ -4,7 +4,7 @@
 //! deployed one.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use adam_memory::{MemoryKind, MemoryRecord, MemoryStore, Provenance};
@@ -26,7 +26,7 @@ fn temp_db(tag: &str) -> PathBuf {
     path
 }
 
-fn cleanup(path: &PathBuf) {
+fn cleanup(path: &Path) {
     for suffix in ["", "-wal", "-shm"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
     }
@@ -82,7 +82,7 @@ fn leaf_at(
 /// the layer's own write path (approvals, self-knowledge, corrupt
 /// summaries).
 fn plant_node(
-    path: &PathBuf,
+    path: &Path,
     record: &MemoryRecord,
     level: i64,
     covered_count: i64,

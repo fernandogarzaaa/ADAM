@@ -3,7 +3,7 @@
 //! deployment where the orchestrator writes and passes while channel
 //! processes write leaves.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
@@ -23,7 +23,7 @@ fn temp_db(tag: &str) -> PathBuf {
     path
 }
 
-fn cleanup(path: &PathBuf) {
+fn cleanup(path: &Path) {
     for suffix in ["", "-wal", "-shm"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
     }
