@@ -276,6 +276,19 @@ impl TreeStore {
         Ok(affected > 0)
     }
 
+    /// Compare-and-delete: retire a claim only if it is still the
+    /// exact claim the caller read (same channel, pair, and
+    /// memory_id). A claim another writer placed on the pair in
+    /// the meantime is never removed by someone else's cleanup.
+    pub(crate) fn delete_claim_owned(&self, claim: &LeafClaim) -> Result<bool, TreeError> {
+        let affected = self.conn.execute(
+            "DELETE FROM tree_claims
+             WHERE channel = ?1 AND external_id = ?2 AND memory_id = ?3",
+            params![claim.channel, claim.external_id, claim.memory_id.to_string()],
+        )?;
+        Ok(affected > 0)
+    }
+
     /// Try to acquire the single summarizer lease for `holder`.
     /// Returns `None` when another holder's lease is still live.
     ///
@@ -511,6 +524,23 @@ mod tests {
         assert!(store.delete_claim("email", "ext-1").unwrap());
         assert!(!store.delete_claim("email", "ext-1").unwrap());
         assert!(!store.delete_claim("email", "never-claimed").unwrap());
+        cleanup(&path);
+    }
+
+    #[test]
+    fn delete_claim_owned_removes_only_the_claim_that_was_read() {
+        let path = temp_db("delete-claim-owned");
+        let store = TreeStore::open(path.to_str().unwrap()).unwrap();
+        let mine = claim("email", "ext-1", false);
+        store.insert_claim(&mine).unwrap();
+        // A claim for the same pair under a different memory_id is
+        // a different writer's claim; an owned delete must not
+        // touch the stored one.
+        let someone_elses = claim("email", "ext-1", false);
+        assert!(!store.delete_claim_owned(&someone_elses).unwrap());
+        assert!(store.claim_by_external("email", "ext-1").unwrap().is_some());
+        assert!(store.delete_claim_owned(&mine).unwrap());
+        assert!(store.claim_by_external("email", "ext-1").unwrap().is_none());
         cleanup(&path);
     }
 

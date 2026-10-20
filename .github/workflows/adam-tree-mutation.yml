@@ -28,6 +28,9 @@ jobs:
           # testteeth diffs against the base SHA; it must be in the
           # local history.
           fetch-depth: 0
+          # The steps below never push; do not leave the checkout
+          # credential on disk for the test runs to read.
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'

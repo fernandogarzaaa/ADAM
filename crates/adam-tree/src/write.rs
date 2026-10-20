@@ -74,7 +74,7 @@ impl TreeStore {
                     duplicate: true,
                 });
             }
-            self.delete_claim(&input.channel, &input.external_id)?;
+            self.delete_claim_owned(&claim)?;
         }
         let embedding = embedder.embed(&input.content)?;
         let mut record = MemoryRecord::new(
@@ -107,9 +107,12 @@ impl TreeStore {
                 // of the same pair: their leaf is canonical and
                 // ours was never stored, so this path leaves no
                 // orphan behind. If their record already landed,
-                // land their node from their claim and point at it;
-                // otherwise point at their claim's id, whose record
-                // lands with its owner.
+                // land their node from their claim and point at it.
+                // If it has not landed, success would point at a
+                // record that may never exist (their writer can
+                // still fail or die), so the lost-race error stands
+                // and the caller retries; their claim settles the
+                // pair on that retry.
                 if let Some(other) = self.claim_by_external(&input.channel, &input.external_id)? {
                     if let Some((node, _)) = self.land_claim(&other)? {
                         return Ok(LeafOutcome {
@@ -117,10 +120,6 @@ impl TreeStore {
                             duplicate: true,
                         });
                     }
-                    return Ok(LeafOutcome {
-                        memory_id: other.memory_id,
-                        duplicate: true,
-                    });
                 }
                 return Err(err);
             }
@@ -128,7 +127,7 @@ impl TreeStore {
         // We own the claim; only now may the record be stored.
         if let Err(err) = self.store.store(&record) {
             // Release the claim so the pair's retry starts clean.
-            let _ = self.delete_claim(&input.channel, &input.external_id);
+            let _ = self.delete_claim_owned(&claim);
             return Err(err.into());
         }
         let node = TreeNode {
@@ -163,7 +162,7 @@ impl TreeStore {
                 return Err(err);
             }
         }
-        let _ = self.delete_claim(&input.channel, &input.external_id);
+        let _ = self.delete_claim_owned(&claim);
         Ok(LeafOutcome {
             memory_id: record.id,
             duplicate: false,
@@ -181,13 +180,13 @@ impl TreeStore {
             return Ok(None);
         };
         if let Some(node) = self.node(claim.memory_id)? {
-            self.delete_claim(&claim.channel, &claim.external_id)?;
+            self.delete_claim_owned(claim)?;
             return Ok(Some((node, false)));
         }
         if let Some(existing) = self.node_by_external(&claim.channel, &claim.external_id)? {
             // The pair was completed by another leaf; this claim's
             // record is a race-loser and the claim is residue.
-            self.delete_claim(&claim.channel, &claim.external_id)?;
+            self.delete_claim_owned(claim)?;
             return Ok(Some((existing, false)));
         }
         let node = TreeNode {
@@ -204,8 +203,25 @@ impl TreeStore {
             pinned: claim.pinned,
             state: NodeState::Open,
         };
-        self.insert_node(&node)?;
-        self.delete_claim(&claim.channel, &claim.external_id)?;
+        if let Err(err) = self.insert_node(&node) {
+            // A concurrent writer or sweep landed the pair between
+            // the checks above and this insert (the same race
+            // adoption step 1 already absorbs). Report the landed
+            // node instead of failing the caller; only a failure
+            // with no landed node is a real error.
+            let landed = match self.node(claim.memory_id)? {
+                Some(n) => Some(n),
+                None => self.node_by_external(&claim.channel, &claim.external_id)?,
+            };
+            return match landed {
+                Some(existing) => {
+                    self.delete_claim_owned(claim)?;
+                    Ok(Some((existing, false)))
+                }
+                None => Err(err),
+            };
+        }
+        self.delete_claim_owned(claim)?;
         Ok(Some((node, true)))
     }
 
