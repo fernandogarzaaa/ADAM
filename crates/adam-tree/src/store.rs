@@ -492,9 +492,11 @@ mod tests {
     #[test]
     fn config_returns_the_configured_values() {
         let path = temp_db("config");
-        let mut config = TreeConfig::default();
-        config.leaf_count_trigger = 7;
-        config.default_token_budget = 1234;
+        let config = TreeConfig {
+            leaf_count_trigger: 7,
+            default_token_budget: 1234,
+            ..TreeConfig::default()
+        };
         let store = TreeStore::with_config(path.to_str().unwrap(), config).unwrap();
         assert_eq!(store.config().leaf_count_trigger, 7);
         assert_eq!(store.config().default_token_budget, 1234);
@@ -550,8 +552,10 @@ mod tests {
     #[test]
     fn renew_lease_extends_only_the_holders_lease() {
         let path = temp_db("renew-lease");
-        let mut config = TreeConfig::default();
-        config.lease_ttl = Duration::from_secs(60);
+        let config = TreeConfig {
+            lease_ttl: Duration::from_secs(60),
+            ..TreeConfig::default()
+        };
         let store = TreeStore::with_config(path.to_str().unwrap(), config).unwrap();
         let lease = store.try_acquire_lease("orchestrator").unwrap().unwrap();
 
