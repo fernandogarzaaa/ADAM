@@ -738,7 +738,10 @@ mod tests {
         let (store, path) = open("repair");
         let at = Utc::now() - Duration::hours(1);
         let outcome = store
-            .write_leaf(&HashEmbedder, &leaf_write("ext-repair", "repairable leaf", at))
+            .write_leaf(
+                &HashEmbedder,
+                &leaf_write("ext-repair", "repairable leaf", at),
+            )
             .unwrap();
         let summary = MemoryRecord::new(
             MemoryKind::Semantic,

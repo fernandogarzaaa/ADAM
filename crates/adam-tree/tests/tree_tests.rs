@@ -1455,9 +1455,7 @@ fn band3_pinned_leaf_of_the_contact_wins_the_cap() {
             &emb,
         )
         .unwrap();
-    store
-        .set_pinned(report.summaries_created[0], true)
-        .unwrap();
+    store.set_pinned(report.summaries_created[0], true).unwrap();
 
     // An unpinned leaf of the contact, then the pinned leaf.
     write(&LeafWrite::new(
@@ -1467,13 +1465,7 @@ fn band3_pinned_leaf_of_the_contact_wins_the_cap() {
         "u-1",
         sized("plain leaf ", 10),
     ));
-    let mut pinned = LeafWrite::new(
-        "email",
-        CONTACT,
-        THREAD_B,
-        "p-1",
-        sized("pinned leaf ", 10),
-    );
+    let mut pinned = LeafWrite::new("email", CONTACT, THREAD_B, "p-1", sized("pinned leaf ", 10));
     pinned.pinned = true;
     let pinned_outcome = write(&pinned);
 

@@ -173,7 +173,9 @@ mod tests {
             "the marker AKIAiosfodnn7example is not a key"
         ));
         // Sixteen uppercase/digit chars with no AKIA prefix at all.
-        assert!(!contains_credential_shaped("prefix ZZZZABCDEFGHIJKLMNOP end"));
+        assert!(!contains_credential_shaped(
+            "prefix ZZZZABCDEFGHIJKLMNOP end"
+        ));
     }
 
     /// A 40+ char token mixing digits, upper, and lower case, drawn
