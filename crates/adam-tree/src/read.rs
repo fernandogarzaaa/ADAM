@@ -208,7 +208,7 @@ impl TreeStore {
                     .into_iter()
                     .filter(|n| &n.thread_key != thread)
                     .collect::<Vec<_>>();
-                siblings.sort_by(|a, b| b.span_start.cmp(&a.span_start));
+                siblings.sort_by_key(|a| std::cmp::Reverse(a.span_start));
                 push_all(siblings, &mut chain);
             }
             None => {
