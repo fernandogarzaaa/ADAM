@@ -8,10 +8,12 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 
 use crate::config::TreeConfig;
 use crate::error::TreeError;
-use crate::model::{Lease, NodeState, TreeNode};
+use crate::model::{LeafClaim, Lease, NodeState, TreeNode};
 
 const NODE_COLUMNS: &str = "memory_id, level, thread_key, contact_key, channel, external_id, \
     span_start, span_end, covered_count, token_estimate, pinned, state";
+
+const CLAIM_COLUMNS: &str = "channel, external_id, memory_id, thread_key, contact_key, pinned";
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS tree_nodes (
@@ -35,6 +37,20 @@ CREATE INDEX IF NOT EXISTS idx_tree_contact ON tree_nodes(contact_key, level);
 CREATE TABLE IF NOT EXISTS tree_meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+-- Leaf claims (see model::LeafClaim): a write records its claim on
+-- a (channel, external_id) pair here before its record is stored.
+-- memory_id deliberately has NO foreign key: preceding the record
+-- is the claim's whole purpose, and tree_nodes' own FK to
+-- memories(id) is enforced, so a claim cannot live in tree_nodes.
+CREATE TABLE IF NOT EXISTS tree_claims (
+    channel     TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    memory_id   TEXT NOT NULL,
+    thread_key  TEXT NOT NULL,
+    contact_key TEXT NOT NULL,
+    pinned      INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (channel, external_id)
 );
 ";
 
@@ -198,38 +214,68 @@ impl TreeStore {
         Ok(())
     }
 
-    /// Remove a sidecar row outright. Returns whether a row was
-    /// deleted. Used to release a leaf claim whose record write
-    /// failed, so the pair's retry starts clean.
-    pub(crate) fn delete_node(&self, id: MemoryId) -> Result<bool, TreeError> {
-        let affected = self.conn.execute(
-            "DELETE FROM tree_nodes WHERE memory_id = ?1",
-            params![id.to_string()],
+    /// Record a leaf claim. The `(channel, external_id)` primary
+    /// key is the claim gate: a second claimant's insert fails.
+    pub(crate) fn insert_claim(&self, claim: &LeafClaim) -> Result<(), TreeError> {
+        self.conn.execute(
+            "INSERT INTO tree_claims (channel, external_id, memory_id, thread_key,
+                    contact_key, pinned)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                claim.channel,
+                claim.external_id,
+                claim.memory_id.to_string(),
+                claim.thread_key,
+                claim.contact_key,
+                claim.pinned as i64,
+            ],
         )?;
-        Ok(affected > 0)
+        Ok(())
     }
 
-    /// Flip a leaf claim from pending to open (its record is stored
-    /// by now). Returns false when the row is not a pending claim,
-    /// e.g. a retry already settled or released it.
-    pub(crate) fn finalize_claim(&self, id: MemoryId) -> Result<bool, TreeError> {
-        let affected = self.conn.execute(
-            "UPDATE tree_nodes SET state = 'open' \
-             WHERE memory_id = ?1 AND state = 'pending'",
-            params![id.to_string()],
-        )?;
-        Ok(affected > 0)
+    /// The claim owning one `(channel, external_id)` pair, if any.
+    pub(crate) fn claim_by_external(
+        &self,
+        channel: &str,
+        external_id: &str,
+    ) -> Result<Option<LeafClaim>, TreeError> {
+        self.conn
+            .query_row(
+                &format!(
+                    "SELECT {CLAIM_COLUMNS} FROM tree_claims \
+                     WHERE channel = ?1 AND external_id = ?2"
+                ),
+                params![channel, external_id],
+                row_to_claim,
+            )
+            .optional()
+            .map_err(TreeError::from)?
+            .transpose()
     }
 
-    /// Delete a pending claim only if its record still does not
-    /// exist. One statement, so the existence check and the delete
-    /// cannot be split by the claim's writer storing its record in
-    /// between. Returns whether the claim was deleted.
-    pub(crate) fn delete_stale_claim(&self, id: MemoryId) -> Result<bool, TreeError> {
+    /// Every outstanding leaf claim.
+    pub(crate) fn all_claims(&self) -> Result<Vec<LeafClaim>, TreeError> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!("SELECT {CLAIM_COLUMNS} FROM tree_claims"))?;
+        let rows = stmt.query_map([], row_to_claim)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row??);
+        }
+        Ok(out)
+    }
+
+    /// Retire the claim on one pair. Returns whether a claim was
+    /// deleted.
+    pub(crate) fn delete_claim(
+        &self,
+        channel: &str,
+        external_id: &str,
+    ) -> Result<bool, TreeError> {
         let affected = self.conn.execute(
-            "DELETE FROM tree_nodes WHERE memory_id = ?1 AND state = 'pending' \
-             AND NOT EXISTS (SELECT 1 FROM memories WHERE id = ?1)",
-            params![id.to_string()],
+            "DELETE FROM tree_claims WHERE channel = ?1 AND external_id = ?2",
+            params![channel, external_id],
         )?;
         Ok(affected > 0)
     }
@@ -376,6 +422,28 @@ fn row_to_node(row: &Row) -> rusqlite::Result<Result<TreeNode, TreeError>> {
             state: NodeState::parse(&state).ok_or_else(|| {
                 TreeError::Corrupt(format!("tree node state '{state}' is invalid"))
             })?,
+        })
+    })())
+}
+
+fn row_to_claim(row: &Row) -> rusqlite::Result<Result<LeafClaim, TreeError>> {
+    Ok((|| -> Result<LeafClaim, TreeError> {
+        let channel: String = row.get(0)?;
+        let external_id: String = row.get(1)?;
+        let id: String = row.get(2)?;
+        let thread_key: String = row.get(3)?;
+        let contact_key: String = row.get(4)?;
+        let pinned: i64 = row.get(5)?;
+
+        Ok(LeafClaim {
+            memory_id: id.parse().map_err(|e| {
+                TreeError::Corrupt(format!("claim id '{id}' is not a valid UUID: {e}"))
+            })?,
+            channel,
+            external_id,
+            thread_key,
+            contact_key,
+            pinned: pinned != 0,
         })
     })())
 }

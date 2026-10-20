@@ -141,12 +141,6 @@ pub struct LeafOutcome {
 /// Coverage state of a tree node (the sidecar `state` column).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeState {
-    /// Claimed by a leaf write that has not stored its record yet
-    /// (or crashed trying). Only level-0 leaf claims are ever
-    /// pending; a pending node is invisible to summarization and to
-    /// the read bands, and is settled by the pair's next
-    /// `write_leaf` or by adoption (see `write.rs`).
-    Pending,
     /// Not yet covered by a next-level summary; a current top node.
     Open,
     /// Covered by exactly one next-level summary.
@@ -157,7 +151,6 @@ impl NodeState {
     /// The stored string form.
     pub fn as_str(&self) -> &'static str {
         match self {
-            NodeState::Pending => "pending",
             NodeState::Open => "open",
             NodeState::Covered => "covered",
         }
@@ -166,7 +159,6 @@ impl NodeState {
     /// Parse the stored string form.
     pub fn parse(s: &str) -> Option<Self> {
         match s {
-            "pending" => Some(NodeState::Pending),
             "open" => Some(NodeState::Open),
             "covered" => Some(NodeState::Covered),
             _ => None,
@@ -204,6 +196,31 @@ pub struct TreeNode {
     pub pinned: bool,
     /// Coverage state.
     pub state: NodeState,
+}
+
+/// A leaf write's claim on its `(channel, external_id)` pair,
+/// recorded in the `tree_claims` sidecar table before the leaf's
+/// record is stored (see `TreeStore::write_leaf`). The claim
+/// carries the leaf's placement (thread, contact, pin), so a
+/// write interrupted after its record landed can be completed by
+/// adoption in the leaf's real thread, never the fallback bucket.
+/// A claim whose record never landed is stale and is settled by
+/// the pair's next `write_leaf`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeafClaim {
+    /// The claimed leaf's ADAM record id (minted before the record
+    /// is stored, which is what makes claiming first possible).
+    pub memory_id: MemoryId,
+    /// Channel the exchange happened on.
+    pub channel: String,
+    /// The channel's message id; with `channel`, the claimed pair.
+    pub external_id: String,
+    /// The leaf's logical thread.
+    pub thread_key: String,
+    /// The leaf's contact.
+    pub contact_key: String,
+    /// The leaf's pin flag.
+    pub pinned: bool,
 }
 
 /// Request for [`crate::TreeStore::read_context`] (spec section 7).
@@ -329,9 +346,9 @@ pub struct SummaryReport {
 /// tree.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AdoptionReport {
-    /// Pending leaf claims whose record had landed, finalized to
-    /// open (a write that crashed after storing, before finalizing).
-    pub claims_finalized: usize,
+    /// Leaf claims retired by the sweep: the claim's leaf was
+    /// already landed, or the sweep landed it from the claim.
+    pub claims_resolved: usize,
     /// Orphan leaves given a sidecar row.
     pub leaves_adopted: usize,
     /// Orphan summaries whose sidecar row was rebuilt from evidence.
