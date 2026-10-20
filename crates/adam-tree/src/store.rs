@@ -451,3 +451,128 @@ fn parse_rfc3339(s: &str) -> Result<DateTime<Utc>, TreeError> {
             TreeError::Corrupt(format!("stored timestamp '{s}' is not valid RFC3339: {e}"))
         })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::TreeConfig;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    fn temp_db(tag: &str) -> PathBuf {
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let path = std::env::temp_dir().join(format!(
+            "adam-tree-store-{tag}-{}-{n}.db",
+            std::process::id()
+        ));
+        cleanup(&path);
+        path
+    }
+
+    fn cleanup(path: &Path) {
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+    }
+
+    fn claim(channel: &str, external_id: &str, pinned: bool) -> LeafClaim {
+        LeafClaim {
+            memory_id: MemoryId::new_v4(),
+            channel: channel.to_string(),
+            external_id: external_id.to_string(),
+            thread_key: "alex@example.com/contract-review".to_string(),
+            contact_key: "alex@example.com".to_string(),
+            pinned,
+        }
+    }
+
+    #[test]
+    fn config_returns_the_configured_values() {
+        let path = temp_db("config");
+        let mut config = TreeConfig::default();
+        config.leaf_count_trigger = 7;
+        config.default_token_budget = 1234;
+        let store = TreeStore::with_config(path.to_str().unwrap(), config).unwrap();
+        assert_eq!(store.config().leaf_count_trigger, 7);
+        assert_eq!(store.config().default_token_budget, 1234);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn delete_claim_reports_whether_a_claim_existed() {
+        let path = temp_db("delete-claim");
+        let store = TreeStore::open(path.to_str().unwrap()).unwrap();
+        store.insert_claim(&claim("email", "ext-1", false)).unwrap();
+        assert!(store.delete_claim("email", "ext-1").unwrap());
+        assert!(!store.delete_claim("email", "ext-1").unwrap());
+        assert!(!store.delete_claim("email", "never-claimed").unwrap());
+        cleanup(&path);
+    }
+
+    #[test]
+    fn claim_round_trip_preserves_the_pin_flag() {
+        let path = temp_db("claim-pin");
+        let store = TreeStore::open(path.to_str().unwrap()).unwrap();
+        let pinned = claim("email", "ext-pinned", true);
+        let unpinned = claim("email", "ext-unpinned", false);
+        store.insert_claim(&pinned).unwrap();
+        store.insert_claim(&unpinned).unwrap();
+        let back = store
+            .claim_by_external("email", "ext-pinned")
+            .unwrap()
+            .unwrap();
+        assert_eq!(back, pinned);
+        let back = store
+            .claim_by_external("email", "ext-unpinned")
+            .unwrap()
+            .unwrap();
+        assert_eq!(back, unpinned);
+        assert_eq!(store.all_claims().unwrap().len(), 2);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn current_lease_reports_holder_and_future_expiry() {
+        let path = temp_db("current-lease");
+        let store = TreeStore::open(path.to_str().unwrap()).unwrap();
+        assert!(store.current_lease().unwrap().is_none());
+        let lease = store.try_acquire_lease("orchestrator").unwrap().unwrap();
+        let current = store.current_lease().unwrap().unwrap();
+        assert_eq!(current.holder, "orchestrator");
+        assert_eq!(current.expires_at, lease.expires_at);
+        assert!(current.expires_at > Utc::now());
+        cleanup(&path);
+    }
+
+    #[test]
+    fn renew_lease_extends_only_the_holders_lease() {
+        let path = temp_db("renew-lease");
+        let mut config = TreeConfig::default();
+        config.lease_ttl = Duration::from_secs(60);
+        let store = TreeStore::with_config(path.to_str().unwrap(), config).unwrap();
+        let lease = store.try_acquire_lease("orchestrator").unwrap().unwrap();
+
+        // A non-holder cannot renew.
+        let stranger = Lease {
+            holder: "someone-else".to_string(),
+            expires_at: lease.expires_at,
+        };
+        assert!(store.renew_lease(&stranger).unwrap().is_none());
+
+        // The holder renews: a fresh expiry, later than the
+        // original, and bounded by roughly now + TTL (not a
+        // product or a time in the past). The sleep keeps the two
+        // acquisitions in distinct milliseconds.
+        std::thread::sleep(Duration::from_millis(10));
+        let before = Utc::now();
+        let renewed = store.renew_lease(&lease).unwrap().unwrap();
+        assert_eq!(renewed.holder, "orchestrator");
+        assert!(renewed.expires_at > lease.expires_at);
+        assert!(renewed.expires_at <= before + chrono::Duration::seconds(65));
+        assert!(renewed.expires_at >= before + chrono::Duration::seconds(55));
+        cleanup(&path);
+    }
+}

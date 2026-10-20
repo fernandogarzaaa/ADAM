@@ -84,3 +84,65 @@ impl Summarizer for FakeSummarizer {
         Ok(text)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn const_embedder_returns_its_vector_verbatim() {
+        let embedder = ConstEmbedder(vec![0.25, -0.5, 0.75]);
+        assert_eq!(
+            embedder.embed("anything at all").unwrap(),
+            vec![0.25, -0.5, 0.75]
+        );
+        assert_eq!(embedder.embed("").unwrap(), vec![0.25, -0.5, 0.75]);
+    }
+
+    /// The hash embedder's contract is exact determinism: same
+    /// text, same vector, byte for byte. These vectors are the
+    /// FNV-1a + xorshift walk computed independently of the Rust
+    /// code; any change to the hash arithmetic breaks them.
+    #[test]
+    fn hash_embedder_matches_reference_vectors() {
+        assert_eq!(
+            HashEmbedder.embed("").unwrap(),
+            vec![
+                -0.05299997329711914,
+                0.6790000200271606,
+                0.7300000190734863,
+                0.003000020980834961,
+                0.9570000171661377,
+                -0.12800002098083496,
+                -0.14499998092651367,
+                0.18299996852874756,
+            ]
+        );
+        assert_eq!(
+            HashEmbedder.embed("hello").unwrap(),
+            vec![
+                0.07299995422363281,
+                -0.5480000078678131,
+                0.878000020980835,
+                0.5570000410079956,
+                0.2059999704360962,
+                -0.8120000064373016,
+                0.13499999046325684,
+                -0.880000002682209,
+            ]
+        );
+        assert_eq!(
+            HashEmbedder.embed("cookie").unwrap(),
+            vec![
+                -0.20099997520446777,
+                -0.5149999856948853,
+                -0.8110000044107437,
+                0.7990000247955322,
+                -0.6089999973773956,
+                0.6059999465942383,
+                0.2799999713897705,
+                -0.1769999861717224,
+            ]
+        );
+    }
+}

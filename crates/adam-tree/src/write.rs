@@ -660,4 +660,116 @@ mod tests {
         store.assert_partition().unwrap();
         cleanup(&path);
     }
+
+    /// Each of the four key fields is required on its own: any one
+    /// of them empty (the others set) rejects the write, and a
+    /// rejected write stores nothing.
+    #[test]
+    fn write_leaf_rejects_each_empty_key_field() {
+        let (store, path) = open("validate");
+        let base = LeafWrite::new("email", CONTACT, THREAD, "ext-valid", "hello");
+        for field in ["channel", "contact", "thread", "external"] {
+            let mut input = base.clone();
+            match field {
+                "channel" => input.channel = String::new(),
+                "contact" => input.contact_key = String::new(),
+                "thread" => input.thread_key = String::new(),
+                _ => input.external_id = String::new(),
+            }
+            let err = store.write_leaf(&HashEmbedder, &input).unwrap_err();
+            assert!(matches!(err, TreeError::InvalidInput(_)), "{field}: {err}");
+        }
+        assert_eq!(store.store.all().unwrap().len(), 0);
+        cleanup(&path);
+    }
+
+    /// Step 1 of adoption takes Episodic records only: an orphan
+    /// episodic record is adopted into the fallback bucket, and a
+    /// Semantic record that merely wears a `channel:` origin is
+    /// not a leaf and stays out of the tree.
+    #[test]
+    fn adoption_takes_episodic_orphans_only() {
+        let (store, path) = open("kinds");
+        let at = Utc::now() - Duration::days(30);
+        let mut episodic = MemoryRecord::new(
+            MemoryKind::Episodic,
+            "orphaned exchange",
+            vec![0.2, 0.8],
+            1.0,
+            Provenance {
+                origin: format!("channel:email:{CONTACT}"),
+                evidence: vec!["ext-orphan".to_string()],
+            },
+            0.0,
+        );
+        episodic.created_at = at;
+        episodic.last_accessed_at = at;
+        store.store.store(&episodic).unwrap();
+        let semantic = MemoryRecord::new(
+            MemoryKind::Semantic,
+            "not a leaf",
+            vec![0.2, 0.8],
+            1.0,
+            Provenance {
+                origin: format!("channel:email:{CONTACT}"),
+                evidence: vec!["ext-not-leaf".to_string()],
+            },
+            0.0,
+        );
+        store.store.store(&semantic).unwrap();
+
+        let adopted = store.adopt_orphans().unwrap();
+        assert_eq!(adopted.leaves_adopted, 1);
+        let node = store.node(episodic.id).unwrap().unwrap();
+        assert_eq!(
+            node.thread_key,
+            format!("{CONTACT}/{}", at.format("%Y-%m")),
+            "orphans land in the date-bucketed fallback thread"
+        );
+        assert!(store.node(semantic.id).unwrap().is_none());
+        cleanup(&path);
+    }
+
+    /// Coverage repair must add the `Generalizes` edge when the
+    /// child is related to the summary by some OTHER relation: a
+    /// `Supports` edge to the same summary is not coverage.
+    #[test]
+    fn repair_coverage_adds_generalizes_beside_other_relations() {
+        let (store, path) = open("repair");
+        let at = Utc::now() - Duration::hours(1);
+        let outcome = store
+            .write_leaf(&HashEmbedder, &leaf_write("ext-repair", "repairable leaf", at))
+            .unwrap();
+        let summary = MemoryRecord::new(
+            MemoryKind::Semantic,
+            "repair summary",
+            vec![0.3, 0.7],
+            0.9,
+            Provenance {
+                origin: "summary:tree:L1".to_string(),
+                evidence: vec![outcome.memory_id.to_string()],
+            },
+            0.0,
+        );
+        store.store.store(&summary).unwrap();
+        store
+            .store
+            .relate(outcome.memory_id, summary.id, RelationKind::Supports)
+            .unwrap();
+
+        let adopted = store.adopt_orphans().unwrap();
+        assert_eq!(adopted.children_flipped, 1);
+        let outgoing = store.store.related_outgoing(outcome.memory_id).unwrap();
+        assert!(
+            outgoing
+                .iter()
+                .any(|(rec, kind)| rec.id == summary.id && *kind == RelationKind::Generalizes),
+            "the Generalizes edge must be added beside the Supports edge"
+        );
+        assert_eq!(
+            store.node(outcome.memory_id).unwrap().unwrap().state,
+            NodeState::Covered
+        );
+        cleanup(&path);
+    }
 }

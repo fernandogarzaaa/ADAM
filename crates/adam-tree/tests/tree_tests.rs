@@ -3,14 +3,16 @@
 //! throughout so the locking and WAL behavior under test is the
 //! deployed one.
 
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use adam_memory::{MemoryKind, MemoryRecord, MemoryStore, Provenance};
 use adam_tree::{
-    token_estimate, ContextRequest, FakeSummarizer, HashEmbedder, LeafOutcome, LeafWrite, MemoryId,
-    NodeState, SummarizeScope, TreeConfig, TreeError, TreeStore,
+    token_estimate, ConstEmbedder, ContextRequest, FakeSummarizer, HashEmbedder, LeafOutcome,
+    LeafWrite, MemoryId, NodeState, RelationKind, SummarizeScope, Summarizer, SummaryRequest,
+    TreeConfig, TreeError, TreeStore,
 };
 use chrono::{Duration, Utc};
 
@@ -887,5 +889,604 @@ fn set_pinned_round_trips_and_rejects_unknown_ids() {
     assert!(!store.node(outcome.memory_id).unwrap().unwrap().pinned);
     let err = store.set_pinned(MemoryId::new_v4(), true).unwrap_err();
     assert!(matches!(err, TreeError::NotInTree(_)));
+    cleanup(&path);
+}
+
+// ---------------------------------------------------------------------
+// Mutation-gate strengthening (PR #24): boundary and contract tests
+// for the summarizer's report, ratios, and retry discipline, the
+// read path's bands, search ranking, drill-down budgets, and the
+// partition checker. Each test pins behavior the spec requires, at
+// the exact boundary where an off-by-one or flipped operator would
+// change the outcome.
+// ---------------------------------------------------------------------
+
+struct FixedSummarizer(usize);
+
+impl Summarizer for FixedSummarizer {
+    fn summarize(&self, _request: &SummaryRequest) -> Result<String, TreeError> {
+        Ok(sized("fixed summary ", self.0))
+    }
+}
+
+struct RecordingSummarizer {
+    requests: RefCell<Vec<SummaryRequest>>,
+    sizes: Vec<usize>,
+}
+
+impl Summarizer for RecordingSummarizer {
+    fn summarize(&self, request: &SummaryRequest) -> Result<String, TreeError> {
+        self.requests.borrow_mut().push(request.clone());
+        let tokens = self.sizes[(request.attempt as usize - 1).min(self.sizes.len() - 1)];
+        Ok(sized("recorded summary ", tokens))
+    }
+}
+
+fn trigger_config() -> TreeConfig {
+    TreeConfig {
+        leaf_count_trigger: 3,
+        child_count_trigger: 2,
+        ..TreeConfig::default()
+    }
+}
+
+/// Two batches of three leaves in `thread`, summarized after each
+/// batch. Returns (first L1 id, L2 id). Requires a store whose
+/// child_count_trigger is 2.
+fn build_l2(store: &TreeStore, thread: &str, tag: &str) -> (MemoryId, MemoryId) {
+    let mut l1 = None;
+    let mut l2 = None;
+    for batch in 0..2 {
+        for i in 0..3 {
+            leaf(
+                store,
+                "email",
+                thread,
+                &format!("{tag}-{batch}-{i}"),
+                sized("leaf-", 40),
+            );
+        }
+        let report = store
+            .summarize_now(
+                &SummarizeScope::Thread(thread.to_string()),
+                "orchestrator",
+                &FakeSummarizer,
+                &HashEmbedder,
+            )
+            .unwrap();
+        if batch == 0 {
+            l1 = Some(report.summaries_created[0]);
+        }
+        l2 = Some(*report.summaries_created.last().unwrap());
+    }
+    (l1.unwrap(), l2.unwrap())
+}
+
+#[test]
+fn pass_report_is_exact_on_success_and_on_nothing_due() {
+    let (store, path) = open("report");
+    let report = store
+        .summarize_now(
+            &SummarizeScope::Thread(THREAD.to_string()),
+            "orchestrator",
+            &FakeSummarizer,
+            &HashEmbedder,
+        )
+        .unwrap();
+    assert_eq!(report.passes_run, 0);
+    assert_eq!(report.skipped_reason.as_deref(), Some("nothing due"));
+
+    let base = Utc::now() - Duration::hours(2);
+    for i in 0..3 {
+        leaf_at(
+            &store,
+            THREAD,
+            &format!("r-{i}"),
+            sized("leaf-", 60),
+            base + Duration::seconds(i * 10),
+        );
+    }
+    let report = store
+        .summarize_now(
+            &SummarizeScope::Thread(THREAD.to_string()),
+            "orchestrator",
+            &FakeSummarizer,
+            &HashEmbedder,
+        )
+        .unwrap();
+    assert_eq!(report.passes_run, 1);
+    assert_eq!(report.summaries_created.len(), 1);
+    assert_eq!(report.nodes_covered, 3);
+    assert_eq!(report.skipped_reason, None);
+    cleanup(&path);
+}
+
+#[test]
+fn oversize_summary_retries_once_with_a_note_then_skips() {
+    let (store, path) = open("oversize");
+    let base = Utc::now() - Duration::hours(2);
+    let mut leaf_ids = Vec::new();
+    for i in 0..3 {
+        leaf_ids.push(
+            leaf_at(
+                &store,
+                THREAD,
+                &format!("o-{i}"),
+                sized("leaf-", 100),
+                base + Duration::seconds(i * 10),
+            )
+            .memory_id,
+        );
+    }
+    // Covered total is 300 tokens, so the L1 target is 36; the
+    // summarizer insists on 50.
+    let recorder = RecordingSummarizer {
+        requests: RefCell::new(Vec::new()),
+        sizes: vec![50, 50],
+    };
+    let report = store
+        .summarize_now(
+            &SummarizeScope::Thread(THREAD.to_string()),
+            "orchestrator",
+            &recorder,
+            &HashEmbedder,
+        )
+        .unwrap();
+    assert!(report.summaries_created.is_empty());
+    assert_eq!(
+        report.skipped_reason.as_deref(),
+        Some("summary oversize after retry")
+    );
+    let requests = recorder.requests.borrow();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].attempt, 1);
+    assert!(requests[0].retry_note.is_none());
+    assert_eq!(requests[1].attempt, 2);
+    assert!(requests[1].retry_note.is_some());
+    drop(requests);
+    for id in &leaf_ids {
+        assert_eq!(store.node(*id).unwrap().unwrap().state, NodeState::Open);
+    }
+    cleanup(&path);
+}
+
+#[test]
+fn l1_pass_uses_the_l1_target_ratio() {
+    let (store, path) = open("ratio");
+    let base = Utc::now() - Duration::hours(2);
+    for i in 0..3 {
+        leaf_at(
+            &store,
+            THREAD,
+            &format!("t-{i}"),
+            sized("leaf-", 100),
+            base + Duration::seconds(i * 10),
+        );
+    }
+    // 50 tokens fits the above-L1 target (20% of 300 = 60) but not
+    // the L1 target (12% of 300 = 36): the pass must reject it.
+    let report = store
+        .summarize_now(
+            &SummarizeScope::Thread(THREAD.to_string()),
+            "orchestrator",
+            &FixedSummarizer(50),
+            &HashEmbedder,
+        )
+        .unwrap();
+    assert!(report.summaries_created.is_empty());
+    assert_eq!(
+        report.skipped_reason.as_deref(),
+        Some("summary oversize after retry")
+    );
+    cleanup(&path);
+}
+
+#[test]
+fn summary_children_are_covered_in_span_order() {
+    let (store, path) = open("span-order");
+    let base = Utc::now() - Duration::hours(3);
+    let late = leaf_at(
+        &store,
+        THREAD,
+        "s-late",
+        sized("late-", 60),
+        base + Duration::seconds(200),
+    );
+    let early = leaf_at(&store, THREAD, "s-early", sized("early-", 60), base);
+    let mid = leaf_at(
+        &store,
+        THREAD,
+        "s-mid",
+        sized("mid-", 60),
+        base + Duration::seconds(100),
+    );
+    let report = store
+        .summarize_now(
+            &SummarizeScope::Thread(THREAD.to_string()),
+            "orchestrator",
+            &FakeSummarizer,
+            &HashEmbedder,
+        )
+        .unwrap();
+    let summary = store
+        .memory_store()
+        .get(report.summaries_created[0])
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        summary.provenance.evidence,
+        vec![
+            early.memory_id.to_string(),
+            mid.memory_id.to_string(),
+            late.memory_id.to_string(),
+        ],
+        "children are summarized in span order, not insertion order"
+    );
+    cleanup(&path);
+}
+
+#[test]
+fn partition_check_catches_a_second_parent_and_ignores_non_tree_edges() {
+    let path = temp_db("partition");
+    let store = TreeStore::with_config(path.to_str().unwrap(), trigger_config()).unwrap();
+    const THREAD_B: &str = "alex@example.com/other-thread";
+    let (l1a, _l2a) = build_l2(&store, THREAD, "pa");
+    let (_l1b, l2b) = build_l2(&store, THREAD_B, "pb");
+    store.assert_partition().unwrap();
+
+    // A Generalizes edge to a record with no sidecar row is not a
+    // tree parent and must not disturb the partition.
+    let stray = MemoryRecord::new(
+        MemoryKind::Semantic,
+        "stray record",
+        vec![0.1],
+        0.5,
+        Provenance {
+            origin: "manual:note".to_string(),
+            evidence: vec![],
+        },
+        0.0,
+    );
+    store.memory_store().store(&stray).unwrap();
+    store
+        .memory_store()
+        .relate(l1a, stray.id, RelationKind::Generalizes)
+        .unwrap();
+    store.assert_partition().unwrap();
+
+    // A second tree parent for an already-covered node breaks it.
+    store
+        .memory_store()
+        .relate(l1a, l2b, RelationKind::Generalizes)
+        .unwrap();
+    assert!(store.assert_partition().is_err());
+    cleanup(&path);
+}
+
+#[test]
+fn l3_summary_of_a_single_thread_keeps_the_thread_key() {
+    let path = temp_db("l3-thread");
+    let store = TreeStore::with_config(path.to_str().unwrap(), trigger_config()).unwrap();
+    let (_l1a, _l2a) = build_l2(&store, THREAD, "la");
+    let (_l1c, _l2b) = build_l2(&store, THREAD, "lb");
+    let report = store
+        .summarize_now(
+            &SummarizeScope::Contact(CONTACT.to_string()),
+            "orchestrator",
+            &FakeSummarizer,
+            &HashEmbedder,
+        )
+        .unwrap();
+    assert_eq!(report.summaries_created.len(), 1);
+    let node = store.node(report.summaries_created[0]).unwrap().unwrap();
+    assert_eq!(node.level, 3);
+    assert_eq!(
+        node.thread_key, THREAD,
+        "an L3 over one thread's summaries keeps that thread, not the contact bucket"
+    );
+    cleanup(&path);
+}
+
+#[test]
+fn orphan_summary_adopts_at_its_own_level() {
+    let (store, path) = open("orphan-l2");
+    let base = Utc::now() - Duration::hours(4);
+    let mut l1_ids = Vec::new();
+    for batch in 0..2 {
+        for i in 0..3 {
+            leaf_at(
+                &store,
+                THREAD,
+                &format!("ol-{batch}-{i}"),
+                sized("leaf-", 40),
+                base + Duration::seconds((batch * 3 + i) * 10),
+            );
+        }
+        let report = store
+            .summarize_now(
+                &SummarizeScope::Thread(THREAD.to_string()),
+                "orchestrator",
+                &FakeSummarizer,
+                &HashEmbedder,
+            )
+            .unwrap();
+        l1_ids.push(report.summaries_created[0]);
+    }
+    // An L2 summary record whose sidecar row never landed.
+    let planted = MemoryRecord::new(
+        MemoryKind::Semantic,
+        "planted L2 summary",
+        vec![0.4, 0.6],
+        0.9,
+        Provenance {
+            origin: "summary:tree:L2".to_string(),
+            evidence: l1_ids.iter().map(|id| id.to_string()).collect(),
+        },
+        0.0,
+    );
+    store.memory_store().store(&planted).unwrap();
+    let adopted = store.adopt_orphans().unwrap();
+    assert_eq!(adopted.summaries_adopted, 1);
+    let node = store.node(planted.id).unwrap().unwrap();
+    assert_eq!(node.level, 2);
+    cleanup(&path);
+}
+
+#[test]
+fn band1_includes_a_leaf_that_exactly_fits() {
+    let (store, path) = open("band1-fit");
+    let base = Utc::now() - Duration::hours(1);
+    leaf_at(&store, THREAD, "b-small", sized("small-", 10), base);
+    let big = leaf_at(
+        &store,
+        THREAD,
+        "b-big",
+        sized("big-", 100),
+        base + Duration::seconds(60),
+    );
+    // Budget 223: band 1 cap is exactly 100 tokens. The newest
+    // leaf (100 tokens) fits exactly; the older small leaf then
+    // no longer fits.
+    let mut request = ContextRequest::for_thread(CONTACT, THREAD);
+    request.token_budget = 223;
+    let bundle = store.read_context(&HashEmbedder, &request).unwrap();
+    assert_eq!(bundle.recent_leaves.len(), 1);
+    assert_eq!(bundle.recent_leaves[0].memory_id, big.memory_id);
+    assert_eq!(bundle.tokens_used, 100);
+    cleanup(&path);
+}
+
+#[test]
+fn band2_single_oversize_summary_overflows_and_exact_fit_does_not() {
+    let (store, path) = open("band2-overflow");
+    let base = Utc::now() - Duration::hours(2);
+    for i in 0..3 {
+        leaf_at(
+            &store,
+            THREAD,
+            &format!("v-{i}"),
+            sized("leaf-", 120),
+            base + Duration::seconds(i * 10),
+        );
+    }
+    let report = store
+        .summarize_now(
+            &SummarizeScope::Thread(THREAD.to_string()),
+            "orchestrator",
+            &FakeSummarizer,
+            &HashEmbedder,
+        )
+        .unwrap();
+    let summary_id = report.summaries_created[0];
+    // The summary is 44 tokens (12% of 360, ceiling). The leaves
+    // (120 each) never fit band 1 at these budgets.
+    let mut request = ContextRequest::for_thread(CONTACT, THREAD);
+    request.token_budget = 100; // band 2 cap 40 < 44
+    let bundle = store.read_context(&HashEmbedder, &request).unwrap();
+    assert_eq!(bundle.summaries.len(), 1);
+    assert_eq!(bundle.summaries[0].memory_id, summary_id);
+    assert!(bundle.overflow);
+
+    let mut request = ContextRequest::for_thread(CONTACT, THREAD);
+    request.token_budget = 110; // band 2 cap exactly 44
+    let bundle = store.read_context(&HashEmbedder, &request).unwrap();
+    assert_eq!(bundle.summaries.len(), 1);
+    assert!(!bundle.overflow);
+    cleanup(&path);
+}
+
+#[test]
+fn summary_chain_includes_sibling_threads_and_contact_scope_stays_summaries() {
+    let path = temp_db("chain");
+    let store = TreeStore::with_config(path.to_str().unwrap(), trigger_config()).unwrap();
+    const THREAD_B: &str = "alex@example.com/other-thread";
+    let (_l1a, l2a) = build_l2(&store, THREAD, "ca");
+    let (_l1b, l2b) = build_l2(&store, THREAD_B, "cb");
+
+    let mut request = ContextRequest::for_thread(CONTACT, THREAD);
+    request.token_budget = 1_000_000;
+    let bundle = store.read_context(&HashEmbedder, &request).unwrap();
+    let chain_ids: Vec<MemoryId> = bundle.summaries.iter().map(|r| r.memory_id).collect();
+    assert_eq!(
+        chain_ids,
+        vec![l2a, l2b],
+        "the active thread's L2 first, then the sibling thread's L2"
+    );
+
+    let mut request = ContextRequest::for_thread(CONTACT, THREAD);
+    request.thread_key = None;
+    request.token_budget = 1_000_000;
+    let bundle = store.read_context(&HashEmbedder, &request).unwrap();
+    assert!(bundle
+        .summaries
+        .iter()
+        .all(|r| r.level.is_some_and(|l| l >= 1)));
+    let mut ids: HashSet<MemoryId> = bundle.summaries.iter().map(|r| r.memory_id).collect();
+    assert!(ids.remove(&l2a) && ids.remove(&l2b) && ids.is_empty());
+    cleanup(&path);
+}
+
+#[test]
+fn search_tree_filters_by_contact() {
+    let (store, path) = open("search-contact");
+    leaf(&store, "email", THREAD, "s-a", sized("alpha leaf ", 40));
+    let bob = LeafWrite::new(
+        "email",
+        "bob@example.com",
+        "bob@example.com/chat",
+        "s-b",
+        sized("alpha leaf ", 40),
+    );
+    store.write_leaf(&HashEmbedder, &bob).unwrap();
+    let hits = store
+        .search_tree(&HashEmbedder, "alpha", Some(CONTACT), 10)
+        .unwrap();
+    assert!(!hits.is_empty());
+    assert!(hits.iter().all(|h| h.record.origin.ends_with(CONTACT)));
+    cleanup(&path);
+}
+
+#[test]
+fn search_tree_ranks_covering_summary_before_its_covered_leaves() {
+    let (store, path) = open("search-demote");
+    let emb = ConstEmbedder(vec![0.6, 0.8]);
+    for i in 0..3 {
+        store
+            .write_leaf(
+                &emb,
+                &LeafWrite::new(
+                    "email",
+                    CONTACT,
+                    THREAD,
+                    format!("d-{i}"),
+                    sized("leaf-", 40),
+                ),
+            )
+            .unwrap();
+    }
+    store
+        .summarize_now(
+            &SummarizeScope::Thread(THREAD.to_string()),
+            "orchestrator",
+            &FakeSummarizer,
+            &emb,
+        )
+        .unwrap();
+    // Every record scores identically, so only the demotion rule
+    // can put the summary first.
+    let hits = store
+        .search_tree(&emb, "anything", Some(CONTACT), 10)
+        .unwrap();
+    assert_eq!(hits.len(), 4);
+    assert_eq!(hits[0].record.level, Some(1));
+    cleanup(&path);
+}
+
+#[test]
+fn drill_down_respects_the_budget_exactly() {
+    let (store, path) = open("drill");
+    let base = Utc::now() - Duration::hours(2);
+    for i in 0..3 {
+        leaf_at(
+            &store,
+            THREAD,
+            &format!("dd-{i}"),
+            sized("leaf-", 10),
+            base + Duration::seconds(i * 10),
+        );
+    }
+    let report = store
+        .summarize_now(
+            &SummarizeScope::Thread(THREAD.to_string()),
+            "orchestrator",
+            &FakeSummarizer,
+            &HashEmbedder,
+        )
+        .unwrap();
+    let summary_id = report.summaries_created[0];
+
+    let out = store.drill_down(summary_id, 20).unwrap();
+    assert_eq!(out.children.len(), 2);
+    assert_eq!(out.tokens_used, 20);
+
+    let out = store.drill_down(summary_id, 15).unwrap();
+    assert_eq!(out.children.len(), 1);
+    assert_eq!(out.tokens_used, 10);
+
+    let out = store.drill_down(summary_id, 30).unwrap();
+    assert_eq!(out.children.len(), 3);
+    assert_eq!(out.tokens_used, 30);
+    cleanup(&path);
+}
+
+#[test]
+fn band3_pinned_leaf_of_the_contact_wins_the_cap() {
+    let (store, path) = open("band3-pinned");
+    let emb = ConstEmbedder(vec![0.6, 0.8]);
+    const THREAD_B: &str = "alex@example.com/other-thread";
+    let write = |input: &LeafWrite| store.write_leaf(&emb, input).unwrap();
+
+    // A pinned leaf of ANOTHER contact, written first.
+    let mut bob = LeafWrite::new(
+        "email",
+        "bob@example.com",
+        "bob@example.com/chat",
+        "pb-1",
+        sized("pinned bob ", 10),
+    );
+    bob.pinned = true;
+    write(&bob);
+
+    // A summary in the other thread, pinned after creation.
+    for i in 0..3 {
+        write(&LeafWrite::new(
+            "email",
+            CONTACT,
+            THREAD_B,
+            format!("ps-{i}"),
+            sized("t2 leaf ", 10),
+        ));
+    }
+    let report = store
+        .summarize_now(
+            &SummarizeScope::Thread(THREAD_B.to_string()),
+            "orchestrator",
+            &FakeSummarizer,
+            &emb,
+        )
+        .unwrap();
+    store
+        .set_pinned(report.summaries_created[0], true)
+        .unwrap();
+
+    // An unpinned leaf of the contact, then the pinned leaf.
+    write(&LeafWrite::new(
+        "email",
+        CONTACT,
+        THREAD_B,
+        "u-1",
+        sized("plain leaf ", 10),
+    ));
+    let mut pinned = LeafWrite::new(
+        "email",
+        CONTACT,
+        THREAD_B,
+        "p-1",
+        sized("pinned leaf ", 10),
+    );
+    pinned.pinned = true;
+    let pinned_outcome = write(&pinned);
+
+    // Budget 67: bands are 30 / 26 / 11. The active thread is
+    // empty and has no summaries, so only band 3 can fill, and its
+    // 11 tokens fit exactly one 10-token record: the contact's
+    // pinned leaf must win it, ahead of the other contact's pinned
+    // leaf, the pinned summary, and the plain leaf.
+    let mut request = ContextRequest::for_thread(CONTACT, THREAD);
+    request.token_budget = 67;
+    request.query = Some("anything".to_string());
+    let bundle = store.read_context(&emb, &request).unwrap();
+    let recall_ids: Vec<MemoryId> = bundle.recall.iter().map(|r| r.memory_id).collect();
+    assert_eq!(recall_ids, vec![pinned_outcome.memory_id]);
     cleanup(&path);
 }
