@@ -268,14 +268,6 @@ impl TreeStore {
 
     /// Retire the claim on one pair. Returns whether a claim was
     /// deleted.
-    pub(crate) fn delete_claim(&self, channel: &str, external_id: &str) -> Result<bool, TreeError> {
-        let affected = self.conn.execute(
-            "DELETE FROM tree_claims WHERE channel = ?1 AND external_id = ?2",
-            params![channel, external_id],
-        )?;
-        Ok(affected > 0)
-    }
-
     /// Compare-and-delete: retire a claim only if it is still the
     /// exact claim the caller read (same channel, pair, and
     /// memory_id). A claim another writer placed on the pair in
@@ -517,17 +509,6 @@ mod tests {
         let store = TreeStore::with_config(path.to_str().unwrap(), config).unwrap();
         assert_eq!(store.config().leaf_count_trigger, 7);
         assert_eq!(store.config().default_token_budget, 1234);
-        cleanup(&path);
-    }
-
-    #[test]
-    fn delete_claim_reports_whether_a_claim_existed() {
-        let path = temp_db("delete-claim");
-        let store = TreeStore::open(path.to_str().unwrap()).unwrap();
-        store.insert_claim(&claim("email", "ext-1", false)).unwrap();
-        assert!(store.delete_claim("email", "ext-1").unwrap());
-        assert!(!store.delete_claim("email", "ext-1").unwrap());
-        assert!(!store.delete_claim("email", "never-claimed").unwrap());
         cleanup(&path);
     }
 
