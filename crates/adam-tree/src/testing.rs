@@ -84,3 +84,68 @@ impl Summarizer for FakeSummarizer {
         Ok(text)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn const_embedder_returns_its_vector_verbatim() {
+        let embedder = ConstEmbedder(vec![0.25, -0.5, 0.75]);
+        assert_eq!(
+            embedder.embed("anything at all").unwrap(),
+            vec![0.25, -0.5, 0.75]
+        );
+        assert_eq!(embedder.embed("").unwrap(), vec![0.25, -0.5, 0.75]);
+    }
+
+    /// The hash embedder's contract is exact determinism: same
+    /// text, same vector, byte for byte. These vectors are the
+    /// FNV-1a + xorshift walk computed independently of the Rust
+    /// code (with f32 rounding after each operation, as Rust
+    /// does); any change to the hash arithmetic breaks them.
+    /// Literals are the shortest decimals that round-trip to the
+    /// exact f32 components.
+    #[test]
+    fn hash_embedder_matches_reference_vectors() {
+        assert_eq!(
+            HashEmbedder.embed("").unwrap(),
+            vec![
+                -0.052999973,
+                0.679,
+                0.73,
+                0.003000021,
+                0.957,
+                -0.12800002,
+                -0.14499998,
+                0.18299997,
+            ]
+        );
+        assert_eq!(
+            HashEmbedder.embed("hello").unwrap(),
+            vec![
+                0.072999954,
+                -0.548,
+                0.878,
+                0.55700004,
+                0.20599997,
+                -0.81200004,
+                0.13499999,
+                -0.88,
+            ]
+        );
+        assert_eq!(
+            HashEmbedder.embed("cookie").unwrap(),
+            vec![
+                -0.20099998,
+                -0.515,
+                -0.811,
+                0.799,
+                -0.60899997,
+                0.60599995,
+                0.27999997,
+                -0.17699999,
+            ]
+        );
+    }
+}

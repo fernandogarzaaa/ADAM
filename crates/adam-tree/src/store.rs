@@ -8,10 +8,12 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 
 use crate::config::TreeConfig;
 use crate::error::TreeError;
-use crate::model::{Lease, NodeState, TreeNode};
+use crate::model::{LeafClaim, Lease, NodeState, TreeNode};
 
 const NODE_COLUMNS: &str = "memory_id, level, thread_key, contact_key, channel, external_id, \
     span_start, span_end, covered_count, token_estimate, pinned, state";
+
+const CLAIM_COLUMNS: &str = "channel, external_id, memory_id, thread_key, contact_key, pinned";
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS tree_nodes (
@@ -35,6 +37,20 @@ CREATE INDEX IF NOT EXISTS idx_tree_contact ON tree_nodes(contact_key, level);
 CREATE TABLE IF NOT EXISTS tree_meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+-- Leaf claims (see model::LeafClaim): a write records its claim on
+-- a (channel, external_id) pair here before its record is stored.
+-- memory_id deliberately has NO foreign key: preceding the record
+-- is the claim's whole purpose, and tree_nodes' own FK to
+-- memories(id) is enforced, so a claim cannot live in tree_nodes.
+CREATE TABLE IF NOT EXISTS tree_claims (
+    channel     TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    memory_id   TEXT NOT NULL,
+    thread_key  TEXT NOT NULL,
+    contact_key TEXT NOT NULL,
+    pinned      INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (channel, external_id)
 );
 ";
 
@@ -198,6 +214,77 @@ impl TreeStore {
         Ok(())
     }
 
+    /// Record a leaf claim. The `(channel, external_id)` primary
+    /// key is the claim gate: a second claimant's insert fails.
+    pub(crate) fn insert_claim(&self, claim: &LeafClaim) -> Result<(), TreeError> {
+        self.conn.execute(
+            "INSERT INTO tree_claims (channel, external_id, memory_id, thread_key,
+                    contact_key, pinned)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                claim.channel,
+                claim.external_id,
+                claim.memory_id.to_string(),
+                claim.thread_key,
+                claim.contact_key,
+                claim.pinned as i64,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The claim owning one `(channel, external_id)` pair, if any.
+    pub(crate) fn claim_by_external(
+        &self,
+        channel: &str,
+        external_id: &str,
+    ) -> Result<Option<LeafClaim>, TreeError> {
+        self.conn
+            .query_row(
+                &format!(
+                    "SELECT {CLAIM_COLUMNS} FROM tree_claims \
+                     WHERE channel = ?1 AND external_id = ?2"
+                ),
+                params![channel, external_id],
+                row_to_claim,
+            )
+            .optional()
+            .map_err(TreeError::from)?
+            .transpose()
+    }
+
+    /// Every outstanding leaf claim.
+    pub(crate) fn all_claims(&self) -> Result<Vec<LeafClaim>, TreeError> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!("SELECT {CLAIM_COLUMNS} FROM tree_claims"))?;
+        let rows = stmt.query_map([], row_to_claim)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row??);
+        }
+        Ok(out)
+    }
+
+    /// Retire the claim on one pair. Returns whether a claim was
+    /// deleted.
+    /// Compare-and-delete: retire a claim only if it is still the
+    /// exact claim the caller read (same channel, pair, and
+    /// memory_id). A claim another writer placed on the pair in
+    /// the meantime is never removed by someone else's cleanup.
+    pub(crate) fn delete_claim_owned(&self, claim: &LeafClaim) -> Result<bool, TreeError> {
+        let affected = self.conn.execute(
+            "DELETE FROM tree_claims
+             WHERE channel = ?1 AND external_id = ?2 AND memory_id = ?3",
+            params![
+                claim.channel,
+                claim.external_id,
+                claim.memory_id.to_string()
+            ],
+        )?;
+        Ok(affected > 0)
+    }
+
     /// Try to acquire the single summarizer lease for `holder`.
     /// Returns `None` when another holder's lease is still live.
     ///
@@ -344,10 +431,167 @@ fn row_to_node(row: &Row) -> rusqlite::Result<Result<TreeNode, TreeError>> {
     })())
 }
 
+fn row_to_claim(row: &Row) -> rusqlite::Result<Result<LeafClaim, TreeError>> {
+    Ok((|| -> Result<LeafClaim, TreeError> {
+        let channel: String = row.get(0)?;
+        let external_id: String = row.get(1)?;
+        let id: String = row.get(2)?;
+        let thread_key: String = row.get(3)?;
+        let contact_key: String = row.get(4)?;
+        let pinned: i64 = row.get(5)?;
+
+        Ok(LeafClaim {
+            memory_id: id.parse().map_err(|e| {
+                TreeError::Corrupt(format!("claim id '{id}' is not a valid UUID: {e}"))
+            })?,
+            channel,
+            external_id,
+            thread_key,
+            contact_key,
+            pinned: pinned != 0,
+        })
+    })())
+}
+
 fn parse_rfc3339(s: &str) -> Result<DateTime<Utc>, TreeError> {
     DateTime::parse_from_rfc3339(s)
         .map(|dt| dt.with_timezone(&Utc))
         .map_err(|e| {
             TreeError::Corrupt(format!("stored timestamp '{s}' is not valid RFC3339: {e}"))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::TreeConfig;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    fn temp_db(tag: &str) -> PathBuf {
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let path = std::env::temp_dir().join(format!(
+            "adam-tree-store-{tag}-{}-{n}.db",
+            std::process::id()
+        ));
+        cleanup(&path);
+        path
+    }
+
+    fn cleanup(path: &Path) {
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+    }
+
+    fn claim(channel: &str, external_id: &str, pinned: bool) -> LeafClaim {
+        LeafClaim {
+            memory_id: MemoryId::new_v4(),
+            channel: channel.to_string(),
+            external_id: external_id.to_string(),
+            thread_key: "alex@example.com/contract-review".to_string(),
+            contact_key: "alex@example.com".to_string(),
+            pinned,
+        }
+    }
+
+    #[test]
+    fn config_returns_the_configured_values() {
+        let path = temp_db("config");
+        let config = TreeConfig {
+            leaf_count_trigger: 7,
+            default_token_budget: 1234,
+            ..TreeConfig::default()
+        };
+        let store = TreeStore::with_config(path.to_str().unwrap(), config).unwrap();
+        assert_eq!(store.config().leaf_count_trigger, 7);
+        assert_eq!(store.config().default_token_budget, 1234);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn delete_claim_owned_removes_only_the_claim_that_was_read() {
+        let path = temp_db("delete-claim-owned");
+        let store = TreeStore::open(path.to_str().unwrap()).unwrap();
+        let mine = claim("email", "ext-1", false);
+        store.insert_claim(&mine).unwrap();
+        // A claim for the same pair under a different memory_id is
+        // a different writer's claim; an owned delete must not
+        // touch the stored one.
+        let someone_elses = claim("email", "ext-1", false);
+        assert!(!store.delete_claim_owned(&someone_elses).unwrap());
+        assert!(store.claim_by_external("email", "ext-1").unwrap().is_some());
+        assert!(store.delete_claim_owned(&mine).unwrap());
+        assert!(store.claim_by_external("email", "ext-1").unwrap().is_none());
+        cleanup(&path);
+    }
+
+    #[test]
+    fn claim_round_trip_preserves_the_pin_flag() {
+        let path = temp_db("claim-pin");
+        let store = TreeStore::open(path.to_str().unwrap()).unwrap();
+        let pinned = claim("email", "ext-pinned", true);
+        let unpinned = claim("email", "ext-unpinned", false);
+        store.insert_claim(&pinned).unwrap();
+        store.insert_claim(&unpinned).unwrap();
+        let back = store
+            .claim_by_external("email", "ext-pinned")
+            .unwrap()
+            .unwrap();
+        assert_eq!(back, pinned);
+        let back = store
+            .claim_by_external("email", "ext-unpinned")
+            .unwrap()
+            .unwrap();
+        assert_eq!(back, unpinned);
+        assert_eq!(store.all_claims().unwrap().len(), 2);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn current_lease_reports_holder_and_future_expiry() {
+        let path = temp_db("current-lease");
+        let store = TreeStore::open(path.to_str().unwrap()).unwrap();
+        assert!(store.current_lease().unwrap().is_none());
+        let lease = store.try_acquire_lease("orchestrator").unwrap().unwrap();
+        let current = store.current_lease().unwrap().unwrap();
+        assert_eq!(current.holder, "orchestrator");
+        assert_eq!(current.expires_at, lease.expires_at);
+        assert!(current.expires_at > Utc::now());
+        cleanup(&path);
+    }
+
+    #[test]
+    fn renew_lease_extends_only_the_holders_lease() {
+        let path = temp_db("renew-lease");
+        let config = TreeConfig {
+            lease_ttl: Duration::from_secs(60),
+            ..TreeConfig::default()
+        };
+        let store = TreeStore::with_config(path.to_str().unwrap(), config).unwrap();
+        let lease = store.try_acquire_lease("orchestrator").unwrap().unwrap();
+
+        // A non-holder cannot renew.
+        let stranger = Lease {
+            holder: "someone-else".to_string(),
+            expires_at: lease.expires_at,
+        };
+        assert!(store.renew_lease(&stranger).unwrap().is_none());
+
+        // The holder renews: a fresh expiry, later than the
+        // original, and bounded by roughly now + TTL (not a
+        // product or a time in the past). The sleep keeps the two
+        // acquisitions in distinct milliseconds.
+        std::thread::sleep(Duration::from_millis(10));
+        let before = Utc::now();
+        let renewed = store.renew_lease(&lease).unwrap().unwrap();
+        assert_eq!(renewed.holder, "orchestrator");
+        assert!(renewed.expires_at > lease.expires_at);
+        assert!(renewed.expires_at <= before + chrono::Duration::seconds(65));
+        assert!(renewed.expires_at >= before + chrono::Duration::seconds(55));
+        cleanup(&path);
+    }
 }

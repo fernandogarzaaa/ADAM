@@ -1,0 +1,60 @@
+name: adam-tree mutation gate
+
+# The testteeth mutation gate for the adam-tree crate (standing
+# rule: touched Rust code scores >= 80 or the gate fails). testteeth
+# drives cargo-mutants with --in-diff against the pre-merge main
+# (d9d24fb5), so the graded scope is exactly the code the adam-tree
+# PRs touched: the whole crates/adam-tree crate, nothing else.
+# The score is computed by testteeth from cargo-mutants'
+# outcomes.json and enforced with --fail-under 80.
+
+on:
+  pull_request:
+    paths:
+      - 'crates/adam-tree/**'
+      - '.github/workflows/adam-tree-mutation.yml'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    # This job runs pull-request code and installed tooling; the
+    # token only needs to read the checkout, nothing more.
+    permissions:
+      contents: read
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # testteeth diffs against the base SHA; it must be in the
+          # local history.
+          fetch-depth: 0
+          # The steps below never push; do not leave the checkout
+          # credential on disk for the test runs to read.
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install testteeth
+        run: pip install git+https://github.com/fernandogarzaaa/testteeth.git
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-mutants
+        uses: taiki-e/install-action@cargo-mutants
+      - name: Run the testteeth mutation gate (base d9d24fb5, fail under 80)
+        run: |
+          set -o pipefail
+          testteeth run --base d9d24fb5 --fail-under 80 --lang rust \
+            --json mutation-report.json 2>&1 | tee mutation-report.txt
+      - name: Upload mutation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-report
+          path: |
+            mutation-report.json
+            mutation-report.txt
+          if-no-files-found: ignore

@@ -32,8 +32,8 @@ pub use detect::contains_credential_shaped;
 pub use error::TreeError;
 pub use model::{
     token_estimate, AdoptionReport, ContextBundle, ContextRecord, ContextRequest, DrillResult,
-    Embedder, LeafOutcome, LeafWrite, Lease, NodeState, SearchHit, SummarizeScope, Summarizer,
-    SummaryChild, SummaryReport, SummaryRequest, TreeNode,
+    Embedder, LeafClaim, LeafOutcome, LeafWrite, Lease, NodeState, SearchHit, SummarizeScope,
+    Summarizer, SummaryChild, SummaryReport, SummaryRequest, TreeNode,
 };
 pub use store::TreeStore;
 pub use testing::{ConstEmbedder, FakeSummarizer, HashEmbedder};

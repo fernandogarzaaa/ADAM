@@ -198,6 +198,31 @@ pub struct TreeNode {
     pub state: NodeState,
 }
 
+/// A leaf write's claim on its `(channel, external_id)` pair,
+/// recorded in the `tree_claims` sidecar table before the leaf's
+/// record is stored (see `TreeStore::write_leaf`). The claim
+/// carries the leaf's placement (thread, contact, pin), so a
+/// write interrupted after its record landed can be completed by
+/// adoption in the leaf's real thread, never the fallback bucket.
+/// A claim whose record never landed is stale and is settled by
+/// the pair's next `write_leaf`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeafClaim {
+    /// The claimed leaf's ADAM record id (minted before the record
+    /// is stored, which is what makes claiming first possible).
+    pub memory_id: MemoryId,
+    /// Channel the exchange happened on.
+    pub channel: String,
+    /// The channel's message id; with `channel`, the claimed pair.
+    pub external_id: String,
+    /// The leaf's logical thread.
+    pub thread_key: String,
+    /// The leaf's contact.
+    pub contact_key: String,
+    /// The leaf's pin flag.
+    pub pinned: bool,
+}
+
 /// Request for [`crate::TreeStore::read_context`] (spec section 7).
 #[derive(Debug, Clone)]
 pub struct ContextRequest {
@@ -321,6 +346,9 @@ pub struct SummaryReport {
 /// tree.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AdoptionReport {
+    /// Leaf claims retired by the sweep: the claim's leaf was
+    /// already landed, or the sweep landed it from the claim.
+    pub claims_resolved: usize,
     /// Orphan leaves given a sidecar row.
     pub leaves_adopted: usize,
     /// Orphan summaries whose sidecar row was rebuilt from evidence.

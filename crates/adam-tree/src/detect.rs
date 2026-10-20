@@ -154,4 +154,73 @@ mod tests {
             "see https://example.com/Some/Long/Path/To/A/Document for details"
         ));
     }
+
+    #[test]
+    fn aws_key_id_at_exact_minimum_length_is_detected() {
+        // "AKIA" + 16 chars = exactly 20 bytes: the shortest string
+        // that can hold a key id at all.
+        assert!(contains_credential_shaped("AKIAIOSFODNN7EXAMPLE"));
+        // A bare prefix with nothing after it is not a key id, and
+        // must not fall through to the scan loop either.
+        assert!(!contains_credential_shaped("AKIA"));
+    }
+
+    #[test]
+    fn aws_prefix_with_wrong_tail_characters_is_not_a_key_id() {
+        // AKIA followed by lowercase: the prefix alone must not be
+        // enough; the 16-char uppercase/digit tail is required.
+        assert!(!contains_credential_shaped(
+            "the marker AKIAiosfodnn7example is not a key"
+        ));
+        // Sixteen uppercase/digit chars with no AKIA prefix at all.
+        assert!(!contains_credential_shaped(
+            "prefix ZZZZABCDEFGHIJKLMNOP end"
+        ));
+    }
+
+    /// A 40+ char token mixing digits, upper, and lower case, drawn
+    /// from the token alphabet.
+    fn mixed_token(chars: usize) -> String {
+        let unit = "Ab3";
+        let mut s = String::new();
+        while s.chars().count() + unit.len() <= chars {
+            s.push_str(unit);
+        }
+        while s.chars().count() < chars {
+            s.push('c');
+        }
+        s
+    }
+
+    #[test]
+    fn long_mixed_token_length_boundary() {
+        // 39 chars: below the threshold, not credential-shaped.
+        assert!(!contains_credential_shaped(&format!(
+            "value {} here",
+            mixed_token(39)
+        )));
+        // Exactly 40: at the threshold, detected.
+        assert!(contains_credential_shaped(&format!(
+            "value {} here",
+            mixed_token(40)
+        )));
+    }
+
+    #[test]
+    fn long_mixed_token_punctuation_rules() {
+        // Surrounding punctuation is trimmed before the check.
+        let wrapped = format!("\"({}),\"", mixed_token(42));
+        assert!(contains_credential_shaped(&wrapped));
+        // A '.' inside the token is in the allowed alphabet.
+        let mut dotted = mixed_token(42);
+        dotted.replace_range(10..11, ".");
+        assert!(contains_credential_shaped(&format!("value {dotted} here")));
+        // A character outside the alphabet ('@') disqualifies the
+        // token even at length with all three classes present.
+        let mut with_at = mixed_token(42);
+        with_at.replace_range(10..11, "@");
+        assert!(!contains_credential_shaped(&format!(
+            "value {with_at} here"
+        )));
+    }
 }
