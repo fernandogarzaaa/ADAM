@@ -554,7 +554,10 @@ mod tests {
             .is_none());
 
         let outcome = store
-            .write_leaf(&HashEmbedder, &leaf_write("ext-stored", &record.content, at))
+            .write_leaf(
+                &HashEmbedder,
+                &leaf_write("ext-stored", &record.content, at),
+            )
             .unwrap();
         assert!(outcome.duplicate);
         assert_eq!(outcome.memory_id, record.id);
@@ -587,7 +590,10 @@ mod tests {
 
         // The channel retry of the same pair.
         let outcome = b
-            .write_leaf(&HashEmbedder, &leaf_write("ext-window", &record.content, at))
+            .write_leaf(
+                &HashEmbedder,
+                &leaf_write("ext-window", &record.content, at),
+            )
             .unwrap();
         assert!(outcome.duplicate);
         assert_eq!(outcome.memory_id, record.id);

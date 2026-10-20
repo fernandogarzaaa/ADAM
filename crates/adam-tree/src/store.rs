@@ -268,11 +268,7 @@ impl TreeStore {
 
     /// Retire the claim on one pair. Returns whether a claim was
     /// deleted.
-    pub(crate) fn delete_claim(
-        &self,
-        channel: &str,
-        external_id: &str,
-    ) -> Result<bool, TreeError> {
+    pub(crate) fn delete_claim(&self, channel: &str, external_id: &str) -> Result<bool, TreeError> {
         let affected = self.conn.execute(
             "DELETE FROM tree_claims WHERE channel = ?1 AND external_id = ?2",
             params![channel, external_id],
